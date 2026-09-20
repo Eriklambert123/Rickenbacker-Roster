@@ -5,10 +5,14 @@ import datetime
 import calendar
 import time
 
+# Force calendar to start on Sunday
+calendar.setfirstweekday(calendar.SUNDAY)
+
 st.set_page_config(page_title="Rickenbacker Fire Department Management", layout="wide", initial_sidebar_state="expanded")
 
-# 🛑 Streamlit Cloud Secret Database Connection
+# 🛑 Streamlit Cloud Secrets
 DB_URI = st.secrets["DB_URI"]
+ADMIN_PIN = st.secrets.get("ADMIN_PIN", "2026") # Defaults to 2026 if not set in secrets
 
 st.markdown("""
 <style>
@@ -22,7 +26,12 @@ hr { margin: 0.5em 0 !important; }
 """, unsafe_allow_html=True)
 
 def get_icon(entry_type):
-    icons = {"Annual Leave": "🏖️", "Sick Leave": "💊", "Personal": "👤", "Military": "🪖", "Admin Leave": "🏢", "Voluntary": "💰", "Mandatory": "🚨", "Guard Personnel On-Duty": "🫡"}
+    icons = {
+        "Annual Leave": "🏖️", "Paternity Leave": "🍼", "Union Leave": "🤝", 
+        "Bereavement Leave": "🕊️", "Medical Leave": "🏥", "Military Leave": "🪖", 
+        "Jury Duty": "⚖️", "NFPA Physical": "🩺", "Personal Leave": "👤", 
+        "Disability Leave": "♿", "Voluntary": "💰", "Mandatory": "🚨", "Guard Personnel On-Duty": "🫡"
+    }
     return icons.get(entry_type, "📌")
 
 def calc_hours(start_str, end_str):
@@ -46,7 +55,7 @@ def parse_time(start_str, end_str, hrs):
         return am, pm
     except: return True, True
 
-# --- 1. SIDEBAR & SHIFT AUTOCALC ---
+# --- 1. SIDEBAR, AUTH, & SHIFT AUTOCALC ---
 st.sidebar.header("Dashboard Controls")
 target_date = st.sidebar.date_input("Select Target Date", datetime.date(2026, 9, 23))
 target_date_str = target_date.strftime("%Y-%m-%d")
@@ -59,6 +68,16 @@ elif shift_mod == 1: selected_shift, top_shift_color = "B-Shift", "#2196F3"
 else: selected_shift, top_shift_color = "C-Shift", "#F44336"
 
 st.sidebar.markdown(f"**Target Shift:** <span style='color:{top_shift_color}; font-weight:bold; font-size:1.1em;'>{selected_shift}</span>", unsafe_allow_html=True)
+
+st.sidebar.divider()
+st.sidebar.markdown("### 🔒 System Access")
+entered_pin = st.sidebar.text_input("Enter PIN to Edit", type="password")
+is_admin = (entered_pin == str(ADMIN_PIN))
+
+if is_admin:
+    st.sidebar.success("✅ Admin Unlocked")
+else:
+    st.sidebar.info("👀 Read-Only Mode")
 
 # --- 2. POSTGRES DATABASE CLOUD CONNECTION ---
 def get_db_connection():
@@ -131,7 +150,7 @@ conn.close()
 personnel_info = {}
 admin_names = set()
 for _, r in all_personnel_df.iterrows():
-    personnel_info[r['name']] = {'Seniority': r['seniority'], 'Schedule': r['schedule'], 'Core': r['core_manning']}
+    personnel_info[r['name']] = {'Seniority': r['seniority'], 'Schedule': r['schedule'], 'Core': r['core_manning'], 'Shift': r['shift']}
     if r['schedule'] == 'Admin': admin_names.add(r['name'])
 
 override_dict = dict(zip(overrides_df['name'], overrides_df['seat'])) if not overrides_df.empty else {}
@@ -150,7 +169,7 @@ def get_hours_stat(name_with_suffix, seat_name):
 db_watches = dict(zip(aro_watch_df['watch_period'], aro_watch_df['name'])) if not aro_watch_df.empty else {}
 db_shift = selected_shift[0] 
 
-# FIX: Weekend Admin Exclusion Check
+# Weekend Admin Exclusion Check
 if target_date.weekday() < 5:  # Monday to Friday
     personnel_df = all_personnel_df[(all_personnel_df['shift'] == db_shift) | (all_personnel_df['shift'] == 'ADMIN')]
 else:  # Saturday and Sunday
@@ -166,7 +185,13 @@ override_names_list = sorted(list(set(all_names + ot_names_list)))
 officer_seats = [("CH-222", "AC"), ("E-221", "Station Captain"), ("R-221", "Crew Chief")]
 rotating_seats = [("ARO", "0700-1200 (Float)"), ("E-221", "Driver/Operator"), ("E-221", "Firefighter 1"), ("E-221", "Firefighter 2"), ("R-221", "Driver/Operator"), ("R-221", "Firefighter 1")]
 crash_seats = [("Crash-4", "Driver"), ("Crash-1", "Driver"), ("Crash-3", "Driver"), ("Crash-8", "Driver")]
-all_seats_list = [f"{r} | {p}" for r, p in officer_seats + rotating_seats + crash_seats]
+
+# Visual Ordering for Dropdown
+all_seats_list = [
+    "CH-222 | AC", "E-221 | Station Captain", "E-221 | Driver/Operator", "E-221 | Firefighter 1", "E-221 | Firefighter 2",
+    "R-221 | Crew Chief", "R-221 | Driver/Operator", "R-221 | Firefighter 1", "ARO | 0700-1200 (Float)",
+    "Crash-1 | Driver", "Crash-3 | Driver", "Crash-4 | Driver", "Crash-8 | Driver"
+]
 
 # --- 3. ROSTER LOGIC ENGINE ---
 leaves_am, leaves_pm = set(), set()
@@ -232,8 +257,9 @@ for name, suffix in all_working_pm:
     if sched == 'Admin': admin_pm.append({"Name": d_name, "Seniority": sen})
     else: pm_crew.append({"Name": d_name, "Seniority": sen})
 
-admin_am.sort(key=lambda x: x["Seniority"])
-admin_pm.sort(key=lambda x: x["Seniority"])
+# Fix: Reverse sort ensures Garver (5) is bumped in before McNamara (4)
+admin_am.sort(key=lambda x: x["Seniority"], reverse=True)
+admin_pm.sort(key=lambda x: x["Seniority"], reverse=True)
 
 while len(am_crew) < 9 and len(admin_am) > 0: am_crew.append(admin_am.pop(0))
 while len(pm_crew) < 9 and len(admin_pm) > 0: pm_crew.append(admin_pm.pop(0))
@@ -263,7 +289,6 @@ for i in range(len(am_pool)-1, -1, -1):
         rig, pos = override_dict[clean_name].split(" | ")
         if am_rigs[rig][pos] == "": am_rigs[rig][pos] = am_pool.pop(i)["Name"]
 
-# FIX: Rank-Aware AM Officer Assignment
 for rig, pos in officer_seats:
     if am_pool and am_rigs[rig][pos] == "":
         chosen = None
@@ -278,7 +303,6 @@ for rig, pos in officer_seats:
             if not cands: cands = [p for p in am_pool if 9 <= p['Seniority'] <= 10] # Lieutenant fallback
             if cands: chosen = cands[0]
         
-        # Fallback to pure seniority if ranks are missing
         if not chosen:
             am_pool.sort(key=lambda x: (x["Name"].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "") in partial_leaves, x["Seniority"]))
             chosen = am_pool[0]
@@ -352,7 +376,6 @@ for rig, pos in crash_seats[:num_crash_pm]:
 
 structural_pm_pool = [pm_crew_dict[n] for n in pm_names if n not in assigned_pm_names]
 
-# FIX: Rank-Aware PM Officer Assignment
 for rig, pos in officer_seats:
     if pm_rigs[rig][pos] == "" and structural_pm_pool:
         chosen = None
@@ -425,7 +448,16 @@ eligible_aro_names = sorted([name for name in all_on_duty if name not in exclude
 
 # --- 4. STREAMLIT VISUALS & TABS ---
 st.title("🚒 Rickenbacker Fire Department Management")
-tab_roster, tab_calendar, tab_data_entry, tab_stats = st.tabs(["📋 Daily Roster", "📅 Leave Calendar", "✍️ Data Entry", "📊 Seat Statistics"])
+
+# Hide Data Entry tab if not admin
+tab_names = ["📋 Daily Roster", "📅 Leave Calendar", "📊 Seat Statistics"]
+if is_admin: tab_names.append("✍️ Data Entry")
+tabs = st.tabs(tab_names)
+
+tab_roster = tabs[0]
+tab_calendar = tabs[1]
+tab_stats = tabs[2]
+if is_admin: tab_data_entry = tabs[3]
 
 # ==========================================
 # TAB 1: DAILY ROSTER
@@ -457,7 +489,7 @@ with tab_roster:
         elif box_type == "error": st.error(output)
         elif box_type == "warning": st.warning(output)
         
-        if rig_name == "ARO":
+        if rig_name == "ARO" and is_admin:
             with st.popover("🎲 Draw Watches", use_container_width=True):
                 with st.form(f"aro_draw_form_{target_date_str}"):
                     st.write("**Assign Watches:**")
@@ -492,9 +524,6 @@ with tab_roster:
         display_rig("Crash-4", "warning")
         display_rig("Crash-8", "warning")
         
-    # ==========================================
-    # STATION DETAILS INTEGRATION
-    # ==========================================
     st.divider()
     day_of_week = target_date.strftime("%A")
     st.subheader(f"🧹 Station Details ({day_of_week})")
@@ -547,46 +576,47 @@ with tab_roster:
         st.info(f"No specific station deep-cleaning details are officially assigned for {day_of_week}s.")
 
     st.divider()
-    if st.button("💾 Commit Today's Roster to History", type="primary", use_container_width=True):
-        records = []
-        for rig, seats in am_roster.items():
-            for pos, am_name in seats.items():
-                pm_name = pm_roster[rig][pos]
-                seat_name = f"{rig} {pos}"
-                
-                if rig == "ARO" and pos != "0700-1200 (Float)": continue
-                if rig in ["Crash-4", "Crash-1"] and pos == "Crew Chief": continue 
-                
-                if am_name and am_name == pm_name:
-                    clean_name = am_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
-                    if clean_name != "VACANT": records.append((target_date_str, clean_name, seat_name, 24.0))
-                else:
-                    if am_name and am_name != "VACANT":
-                        clean_am = am_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
-                        records.append((target_date_str, clean_am, seat_name, 8.0))
-                    if pm_name and pm_name != "VACANT":
-                        clean_pm = pm_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
-                        records.append((target_date_str, clean_pm, seat_name, 16.0))
-        
-        am_float = am_roster["ARO"]["0700-1200 (Float)"]
-        if am_float and am_float != "VACANT":
-            clean_am = am_float.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
-            records.append((target_date_str, clean_am, "Watch: 0700-1200", 1.0))
+    if is_admin:
+        if st.button("💾 Commit Today's Roster to History", type="primary", use_container_width=True):
+            records = []
+            for rig, seats in am_roster.items():
+                for pos, am_name in seats.items():
+                    pm_name = pm_roster[rig][pos]
+                    seat_name = f"{rig} {pos}"
+                    
+                    if rig == "ARO" and pos != "0700-1200 (Float)": continue
+                    if rig in ["Crash-4", "Crash-1"] and pos == "Crew Chief": continue 
+                    
+                    if am_name and am_name == pm_name:
+                        clean_name = am_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
+                        if clean_name != "VACANT": records.append((target_date_str, clean_name, seat_name, 24.0))
+                    else:
+                        if am_name and am_name != "VACANT":
+                            clean_am = am_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
+                            records.append((target_date_str, clean_am, seat_name, 8.0))
+                        if pm_name and pm_name != "VACANT":
+                            clean_pm = pm_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
+                            records.append((target_date_str, clean_pm, seat_name, 16.0))
             
-        for wp in ["1200-1700", "1700-2200", "2200-0600", "0600-0700"]:
-            if wp in db_watches and db_watches[wp] not in ["", "--"]:
-                clean_w = db_watches[wp].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
-                records.append((target_date_str, clean_w, f"Watch: {wp}", 1.0))
-                        
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("DELETE FROM Position_Log WHERE Target_Date = %s", (target_date_str,))
-        c.executemany("INSERT INTO Position_Log (Target_Date, Name, Position, Hours) VALUES (%s, %s, %s, %s)", records)
-        conn.commit()
-        conn.close()
-        st.success("Roster successfully saved to history! The balancing engine has been updated.")
-        time.sleep(1)
-        st.rerun()
+            am_float = am_roster["ARO"]["0700-1200 (Float)"]
+            if am_float and am_float != "VACANT":
+                clean_am = am_float.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
+                records.append((target_date_str, clean_am, "Watch: 0700-1200", 1.0))
+                
+            for wp in ["1200-1700", "1700-2200", "2200-0600", "0600-0700"]:
+                if wp in db_watches and db_watches[wp] not in ["", "--"]:
+                    clean_w = db_watches[wp].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
+                    records.append((target_date_str, clean_w, f"Watch: {wp}", 1.0))
+                            
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("DELETE FROM Position_Log WHERE Target_Date = %s", (target_date_str,))
+            c.executemany("INSERT INTO Position_Log (Target_Date, Name, Position, Hours) VALUES (%s, %s, %s, %s)", records)
+            conn.commit()
+            conn.close()
+            st.success("Roster successfully saved to history! The balancing engine has been updated.")
+            time.sleep(1)
+            st.rerun()
 
 # ==========================================
 # TAB 2: LEAVE CALENDAR
@@ -597,7 +627,7 @@ with tab_calendar:
     with cal_col2: selected_year = st.selectbox("Year", [2025, 2026, 2027], index=1)
     st.divider()
     cal_matrix = calendar.monthcalendar(selected_year, selected_month)
-    days_of_week = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    days_of_week = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
     header_cols = st.columns(7)
     for i, day_name in enumerate(days_of_week): header_cols[i].markdown(f"<h5 style='text-align: center;'>{day_name}</h5>", unsafe_allow_html=True)
     
@@ -648,12 +678,13 @@ with tab_calendar:
                                 with st.popover(f"{get_icon(l['leave_type'])} {l['name']} ({hrs}h)", use_container_width=True):
                                     st.markdown(f"**{l['leave_type']}**")
                                     st.write(f"⏱️ {l['start_time']} - {l['end_time']}")
-                                    if st.button("🗑️ Cancel Leave", key=f"del_leave_{l['id']}", type="primary", use_container_width=True):
-                                        conn = get_db_connection()
-                                        conn.cursor().execute("DELETE FROM Leave_Ledger WHERE id = %s", (l['id'],))
-                                        conn.commit()
-                                        conn.close()
-                                        st.rerun()
+                                    if is_admin:
+                                        if st.button("🗑️ Cancel Leave", key=f"del_leave_{l['id']}", type="primary", use_container_width=True):
+                                            conn = get_db_connection()
+                                            conn.cursor().execute("DELETE FROM Leave_Ledger WHERE id = %s", (l['id'],))
+                                            conn.commit()
+                                            conn.close()
+                                            st.rerun()
                                         
                         if not day_ot.empty:
                             for _, o in day_ot.iterrows():
@@ -661,12 +692,13 @@ with tab_calendar:
                                 with st.popover(f"{get_icon(o['ot_type'])} {o['name']} ({hrs}h)", use_container_width=True):
                                     st.markdown(f"**{o['ot_type']}**")
                                     st.write(f"⏱️ {o['start_time']} - {o['end_time']}")
-                                    if st.button("🗑️ Cancel OT", key=f"del_ot_{o['id']}", type="primary", use_container_width=True):
-                                        conn = get_db_connection()
-                                        conn.cursor().execute("DELETE FROM Overtime_Log WHERE id = %s", (o['id'],))
-                                        conn.commit()
-                                        conn.close()
-                                        st.rerun()
+                                    if is_admin:
+                                        if st.button("🗑️ Cancel OT", key=f"del_ot_{o['id']}", type="primary", use_container_width=True):
+                                            conn = get_db_connection()
+                                            conn.cursor().execute("DELETE FROM Overtime_Log WHERE id = %s", (o['id'],))
+                                            conn.commit()
+                                            conn.close()
+                                            st.rerun()
                                     
                         for t in day_trades:
                             hrs = int(t['Total_Hours']) if t['Total_Hours'] % 1 == 0 else t['Total_Hours']
@@ -674,136 +706,167 @@ with tab_calendar:
                             with st.popover(f"🔀 {t['Off_Name']} 🔁 {t['Work_Name']} ({hrs}h)", use_container_width=True):
                                 st.markdown(f"**Shift Trade**")
                                 st.write(f"⏱️ {time_str}")
-                                if st.button("🗑️ Cancel Trade", key=f"del_trade_{t['id']}_{date_str}", type="primary", use_container_width=True):
-                                    conn = get_db_connection()
-                                    conn.cursor().execute("DELETE FROM Shift_Trades_V3 WHERE id = %s", (t['id'],))
-                                    conn.commit()
-                                    conn.close()
-                                    st.rerun()
+                                if is_admin:
+                                    if st.button("🗑️ Cancel Trade", key=f"del_trade_{t['id']}_{date_str}", type="primary", use_container_width=True):
+                                        conn = get_db_connection()
+                                        conn.cursor().execute("DELETE FROM Shift_Trades_V3 WHERE id = %s", (t['id'],))
+                                        conn.commit()
+                                        conn.close()
+                                        st.rerun()
                 else: st.write("")
 
 # ==========================================
-# TAB 3: DATA ENTRY 
+# TAB 3: DATA ENTRY (ADMIN ONLY)
 # ==========================================
-with tab_data_entry:
-    st.subheader("Log New Entries")
-    form_col1, form_col2, form_col3 = st.columns(3)
-    
-    with form_col1:
-        with st.form("leave_form", clear_on_submit=True):
-            st.markdown("#### 🏖️ Enter Leave")
-            l_date = st.date_input("Target Date", value=target_date)
-            l_name = st.selectbox("Personnel", all_names)
-            l_type = st.selectbox("Leave Type", ["Annual Leave", "Sick Leave", "Personal", "Military", "Admin Leave"])
-            l_24h = st.checkbox("Full 24h Shift (0700-0700)", value=True, key="l_24")
-            time_col1, time_col2 = st.columns(2)
-            l_start = time_col1.text_input("Start Time (e.g., 0700)", "0700", key="l_s")
-            l_end = time_col2.text_input("End Time (e.g., 0700)", "0700", key="l_e")
-            
-            if st.form_submit_button("Save Leave"):
-                if l_24h: l_start, l_end, l_hours = "0700", "0700", 24.0
-                else: l_hours = calc_hours(l_start, l_end)
+if is_admin:
+    with tab_data_entry:
+        st.subheader("Log New Entries")
+        form_col1, form_col2, form_col3 = st.columns(3)
+        
+        with form_col1:
+            with st.form("leave_form", clear_on_submit=True):
+                st.markdown("#### 🏖️ Enter Leave")
+                l_date_range = st.date_input("Target Date(s)", value=(target_date, target_date))
+                l_name = st.selectbox("Personnel", all_names)
+                l_type = st.selectbox("Leave Type", ["Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave", "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical", "Personal Leave", "Disability Leave"])
+                l_24h = st.checkbox("Full 24h Shift (0700-0700)", value=True, key="l_24")
+                time_col1, time_col2 = st.columns(2)
+                l_start = time_col1.text_input("Start Time (e.g., 0700)", "0700", key="l_s")
+                l_end = time_col2.text_input("End Time (e.g., 0700)", "0700", key="l_e")
+                
+                if st.form_submit_button("Save Leave"):
+                    # Process Bulk Dates
+                    if isinstance(l_date_range, tuple) or isinstance(l_date_range, list):
+                        start_dt = l_date_range[0]
+                        end_dt = l_date_range[1] if len(l_date_range) > 1 else l_date_range[0]
+                    else:
+                        start_dt = end_dt = l_date_range
+                        
+                    delta = end_dt - start_dt
                     
-                conn = get_db_connection()
-                conn.cursor().execute("INSERT INTO Leave_Ledger (Target_Date, Name, Leave_Type, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s)", (l_date.strftime("%Y-%m-%d"), l_name, l_type, l_start, l_end, l_hours))
-                conn.commit()
-                conn.close()
-                st.success(f"Logged leave for {l_name}.")
-                time.sleep(1)
-                st.rerun()
+                    p_shift = personnel_info.get(l_name, {}).get('Shift', 'A')
+                    p_sched = personnel_info.get(l_name, {}).get('Schedule', 'Structural')
+                    
+                    dates_to_log = []
+                    anchor = datetime.date(2026, 9, 16)
+                    for i in range(delta.days + 1):
+                        cur_dt = start_dt + datetime.timedelta(days=i)
+                        if p_sched == 'Admin':
+                            if cur_dt.weekday() < 5:
+                                dates_to_log.append(cur_dt.strftime("%Y-%m-%d"))
+                        else:
+                            s_mod = (cur_dt - anchor).days % 3
+                            day_s = "A" if s_mod == 0 else ("B" if s_mod == 1 else "C")
+                            if p_shift == day_s:
+                                dates_to_log.append(cur_dt.strftime("%Y-%m-%d"))
 
-    with form_col2:
-        with st.form("ot_form", clear_on_submit=True):
-            st.markdown("#### 💰 Enter Overtime / Temp Duty")
-            o_date = st.date_input("Target Date ", value=target_date)
-            o_name_dd = st.selectbox("Permanent Personnel", ["-- Select --"] + all_names, key="ot_personnel") 
-            o_name_wi = st.text_input("OR Write-In Name", placeholder="e.g., A1C Snuffy", key="ot_wi")
-            o_type = st.selectbox("OT Type", ["Voluntary", "Mandatory", "Guard Personnel On-Duty"])
-            o_24h = st.checkbox("Full 24h Shift (0700-0700)", value=False, key="o_24")
-            time_col3, time_col4 = st.columns(2)
-            o_start = time_col3.text_input("Start Time (e.g., 1500)", "1500", key="o_s")
-            o_end = time_col4.text_input("End Time (e.g., 0700)", "0700", key="o_e")
-            
-            if st.form_submit_button("Save OT"):
-                final_name = o_name_wi.strip() if o_name_wi.strip() != "" else o_name_dd
-                if final_name == "-- Select --": st.error("Please select a person or write one in!")
-                else:
-                    if o_24h: o_start, o_end, o_hours = "0700", "0700", 24.0
-                    else: o_hours = calc_hours(o_start, o_end)
-                        
-                    conn = get_db_connection()
-                    conn.cursor().execute("INSERT INTO Overtime_Log (Target_Date, Name, OT_Type, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s)", (o_date.strftime("%Y-%m-%d"), final_name, o_type, o_start, o_end, o_hours))
-                    conn.commit()
-                    conn.close()
-                    st.success(f"Logged OT for {final_name}.")
-                    time.sleep(1)
-                    st.rerun()
-                
-    with form_col3:
-        with st.form("trade_form", clear_on_submit=True):
-            st.markdown("#### 🔀 Enter Shift Trade")
-            st.markdown("**Person 1**")
-            t_name1 = st.selectbox("Name", all_names, key="t_n1")
-            t_date1 = st.date_input("Original Scheduled Date", value=target_date, key="t_d1")
-            st.divider()
-            st.markdown("**Person 2**")
-            t_name2 = st.selectbox("Name", all_names, key="t_n2")
-            t_date2 = st.date_input("Original Scheduled Date", value=target_date, key="t_d2")
-            st.divider()
-            t_24h = st.checkbox("Full 24h Trade (0700-0700)", value=True, key="t_24")
-            time_col5, time_col6 = st.columns(2)
-            t_start = time_col5.text_input("Start Time", "0700", key="t_s")
-            t_end = time_col6.text_input("End Time", "0700", key="t_e")
-            
-            if st.form_submit_button("Save Trade"):
-                if t_name1 == t_name2: st.error("Personnel cannot trade with themselves!")
-                else:
-                    if t_24h: t_start, t_end, t_hours = "0700", "0700", 24.0
-                    else: t_hours = calc_hours(t_start, t_end)
-                        
-                    conn = get_db_connection()
-                    conn.cursor().execute("INSERT INTO Shift_Trades_V3 (Date_1, Name_1, Date_2, Name_2, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s, %s)", (t_date1.strftime("%Y-%m-%d"), t_name1, t_date2.strftime("%Y-%m-%d"), t_name2, t_start, t_end, t_hours))
-                    conn.commit()
-                    conn.close()
-                    st.success(f"Logged Trade: {t_name1} and {t_name2}.")
-                    time.sleep(1)
-                    st.rerun()
-                    
-    st.divider()
-    st.subheader("🔧 Manual Roster Overrides")
-    st.markdown("Use this to forcefully lock a specific person into a specific seat. Overrides instantly bypass all seniority and statistics logic. The rest of the crew will automatically build around your locked seat.")
-    
-    ov_col1, ov_col2 = st.columns([1, 1])
-    with ov_col1:
-        with st.form("override_form", clear_on_submit=True):
-            o_date_ov = st.date_input("Target Date", value=target_date, key="ov_d")
-            o_name = st.selectbox("Personnel (Includes Write-Ins)", override_names_list, key="ov_n")
-            o_seat = st.selectbox("Assign to Seat", all_seats_list, key="ov_s")
-            
-            if st.form_submit_button("Lock Seat Override"):
-                conn = get_db_connection()
-                conn.cursor().execute("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", (o_date_ov.strftime("%Y-%m-%d"), o_name, o_seat))
-                conn.commit()
-                conn.close()
-                st.success(f"Locked {o_name} into {o_seat}.")
-                time.sleep(1)
-                st.rerun()
-                
-    with ov_col2:
-        st.markdown(f"**Active Overrides for Selected Date ({target_date_str}):**")
-        if overrides_df.empty:
-            st.info("No active overrides for this date.")
-        else:
-            for _, ov in overrides_df.iterrows():
-                with st.container(border=True):
-                    cols = st.columns([4, 1])
-                    cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']}")
-                    if cols[1].button("🗑️", key=f"del_ov_{ov['id']}", use_container_width=True):
+                    if not dates_to_log:
+                        st.error("No assigned shift days found in that range for this person.")
+                    else:
+                        if l_24h: l_start, l_end, l_hours = "0700", "0700", 24.0
+                        else: l_hours = calc_hours(l_start, l_end)
+                            
                         conn = get_db_connection()
-                        conn.cursor().execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
+                        inserts = [(d, l_name, l_type, l_start, l_end, l_hours) for d in dates_to_log]
+                        conn.cursor().executemany("INSERT INTO Leave_Ledger (Target_Date, Name, Leave_Type, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s)", inserts)
                         conn.commit()
                         conn.close()
+                        st.success(f"Logged {len(dates_to_log)} shift(s) of leave for {l_name}.")
+                        time.sleep(1)
                         st.rerun()
+
+        with form_col2:
+            with st.form("ot_form", clear_on_submit=True):
+                st.markdown("#### 💰 Enter Overtime / Temp Duty")
+                o_date = st.date_input("Target Date ", value=target_date)
+                o_name_dd = st.selectbox("Permanent Personnel", ["-- Select --"] + all_names, key="ot_personnel") 
+                o_name_wi = st.text_input("OR Write-In Name", placeholder="e.g., A1C Snuffy", key="ot_wi")
+                o_type = st.selectbox("OT Type", ["Voluntary", "Mandatory", "Guard Personnel On-Duty"])
+                o_24h = st.checkbox("Full 24h Shift (0700-0700)", value=False, key="o_24")
+                time_col3, time_col4 = st.columns(2)
+                o_start = time_col3.text_input("Start Time (e.g., 1500)", "1500", key="o_s")
+                o_end = time_col4.text_input("End Time (e.g., 0700)", "0700", key="o_e")
+                
+                if st.form_submit_button("Save OT"):
+                    final_name = o_name_wi.strip() if o_name_wi.strip() != "" else o_name_dd
+                    if final_name == "-- Select --": st.error("Please select a person or write one in!")
+                    else:
+                        if o_24h: o_start, o_end, o_hours = "0700", "0700", 24.0
+                        else: o_hours = calc_hours(o_start, o_end)
+                            
+                        conn = get_db_connection()
+                        conn.cursor().execute("INSERT INTO Overtime_Log (Target_Date, Name, OT_Type, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s)", (o_date.strftime("%Y-%m-%d"), final_name, o_type, o_start, o_end, o_hours))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Logged OT for {final_name}.")
+                        time.sleep(1)
+                        st.rerun()
+                    
+        with form_col3:
+            with st.form("trade_form", clear_on_submit=True):
+                st.markdown("#### 🔀 Enter Shift Trade")
+                st.markdown("**Person 1**")
+                t_name1 = st.selectbox("Name", all_names, key="t_n1")
+                t_date1 = st.date_input("Original Scheduled Date", value=target_date, key="t_d1")
+                st.divider()
+                st.markdown("**Person 2**")
+                t_name2 = st.selectbox("Name", all_names, key="t_n2")
+                t_date2 = st.date_input("Original Scheduled Date", value=target_date, key="t_d2")
+                st.divider()
+                t_24h = st.checkbox("Full 24h Trade (0700-0700)", value=True, key="t_24")
+                time_col5, time_col6 = st.columns(2)
+                t_start = time_col5.text_input("Start Time", "0700", key="t_s")
+                t_end = time_col6.text_input("End Time", "0700", key="t_e")
+                
+                if st.form_submit_button("Save Trade"):
+                    if t_name1 == t_name2: st.error("Personnel cannot trade with themselves!")
+                    else:
+                        if t_24h: t_start, t_end, t_hours = "0700", "0700", 24.0
+                        else: t_hours = calc_hours(t_start, t_end)
+                            
+                        conn = get_db_connection()
+                        conn.cursor().execute("INSERT INTO Shift_Trades_V3 (Date_1, Name_1, Date_2, Name_2, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s, %s)", (t_date1.strftime("%Y-%m-%d"), t_name1, t_date2.strftime("%Y-%m-%d"), t_name2, t_start, t_end, t_hours))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Logged Trade: {t_name1} and {t_name2}.")
+                        time.sleep(1)
+                        st.rerun()
+                        
+        st.divider()
+        st.subheader("🔧 Manual Roster Overrides")
+        st.markdown("Use this to forcefully lock a specific person into a specific seat. Overrides instantly bypass all seniority and statistics logic. The rest of the crew will automatically build around your locked seat.")
+        
+        ov_col1, ov_col2 = st.columns([1, 1])
+        with ov_col1:
+            with st.form("override_form", clear_on_submit=True):
+                o_date_ov = st.date_input("Target Date", value=target_date, key="ov_d")
+                o_name = st.selectbox("Personnel (Includes Write-Ins)", override_names_list, key="ov_n")
+                o_seat = st.selectbox("Assign to Seat", all_seats_list, key="ov_s")
+                
+                if st.form_submit_button("Lock Seat Override"):
+                    conn = get_db_connection()
+                    conn.cursor().execute("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", (o_date_ov.strftime("%Y-%m-%d"), o_name, o_seat))
+                    conn.commit()
+                    conn.close()
+                    st.success(f"Locked {o_name} into {o_seat}.")
+                    time.sleep(1)
+                    st.rerun()
+                    
+        with ov_col2:
+            st.markdown(f"**Active Overrides for Selected Date ({target_date_str}):**")
+            if overrides_df.empty:
+                st.info("No active overrides for this date.")
+            else:
+                for _, ov in overrides_df.iterrows():
+                    with st.container(border=True):
+                        cols = st.columns([4, 1])
+                        cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']}")
+                        if cols[1].button("🗑️", key=f"del_ov_{ov['id']}", use_container_width=True):
+                            conn = get_db_connection()
+                            conn.cursor().execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
 
 # ==========================================
 # TAB 4: SEAT STATISTICS
