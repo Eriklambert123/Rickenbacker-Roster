@@ -7,7 +7,7 @@ import time
 
 st.set_page_config(page_title="Rickenbacker Fire Department Management", layout="wide", initial_sidebar_state="expanded")
 
-# The app will safely pull the password from Streamlit's hidden settings
+# 🛑 Streamlit Cloud Secret Database Connection
 DB_URI = st.secrets["DB_URI"]
 
 st.markdown("""
@@ -67,7 +67,7 @@ def get_db_connection():
 conn = get_db_connection()
 c = conn.cursor()
 
-# Create Tables using Postgres Syntax
+# Create Tables
 c.execute('''CREATE TABLE IF NOT EXISTS ARO_Watch (id SERIAL PRIMARY KEY, Target_Date TEXT, Watch_Period TEXT, Name TEXT)''')
 c.execute('''CREATE TABLE IF NOT EXISTS Shift_Trades_V3 (id SERIAL PRIMARY KEY, Date_1 TEXT, Name_1 TEXT, Date_2 TEXT, Name_2 TEXT, Start_Time TEXT, End_Time TEXT, Total_Hours REAL)''')
 c.execute('''CREATE TABLE IF NOT EXISTS Position_Log (id SERIAL PRIMARY KEY, Target_Date TEXT, Name TEXT, Position TEXT, Hours REAL)''')
@@ -96,45 +96,67 @@ if c.fetchone()[0] == 0:
     c.executemany("INSERT INTO Personnel (Name, Seniority, Core_Manning, Schedule, Shift) VALUES (%s, %s, %s, %s, %s)", roster)
 conn.commit()
 
-# Read Live Data
 import warnings
-warnings.filterwarnings('ignore') # Hides a minor pandas warning about raw psycopg2 connections
+warnings.filterwarnings('ignore')
 
-all_personnel_df = pd.read_sql("SELECT Name, Seniority, Core_Manning, Schedule, Shift FROM Personnel", conn)
-all_leave_df = pd.read_sql("SELECT id, Name, Target_Date, Leave_Type, Start_Time, End_Time, Total_Hours FROM Leave_Ledger", conn)
-all_ot_df = pd.read_sql("SELECT id, Name, Target_Date, OT_Type, Start_Time, End_Time, Total_Hours FROM Overtime_Log", conn)
-all_trades_df = pd.read_sql("SELECT id, Date_1, Name_1, Date_2, Name_2, Start_Time, End_Time, Total_Hours FROM Shift_Trades_V3", conn)
-aro_watch_df = pd.read_sql("SELECT Watch_Period, Name FROM ARO_Watch WHERE Target_Date = %s", conn, params=(target_date_str,))
-overrides_df = pd.read_sql("SELECT id, Name, Seat FROM Manual_Overrides WHERE Target_Date = %s", conn, params=(target_date_str,))
+# Read Data & Standardize Column Names to Lowercase to Prevent Postgres Case Errors
+all_personnel_df = pd.read_sql("SELECT * FROM Personnel", conn)
+all_personnel_df.columns = [c.lower() for c in all_personnel_df.columns]
+
+all_leave_df = pd.read_sql("SELECT * FROM Leave_Ledger", conn)
+if not all_leave_df.empty: all_leave_df.columns = [c.lower() for c in all_leave_df.columns]
+else: all_leave_df = pd.DataFrame(columns=["id", "name", "target_date", "leave_type", "start_time", "end_time", "total_hours"])
+
+all_ot_df = pd.read_sql("SELECT * FROM Overtime_Log", conn)
+if not all_ot_df.empty: all_ot_df.columns = [c.lower() for c in all_ot_df.columns]
+else: all_ot_df = pd.DataFrame(columns=["id", "name", "target_date", "ot_type", "start_time", "end_time", "total_hours"])
+
+all_trades_df = pd.read_sql("SELECT * FROM Shift_Trades_V3", conn)
+if not all_trades_df.empty: all_trades_df.columns = [c.lower() for c in all_trades_df.columns]
+else: all_trades_df = pd.DataFrame(columns=["id", "date_1", "name_1", "date_2", "name_2", "start_time", "end_time", "total_hours"])
+
+aro_watch_df = pd.read_sql("SELECT * FROM ARO_Watch WHERE Target_Date = %s", conn, params=(target_date_str,))
+if not aro_watch_df.empty: aro_watch_df.columns = [c.lower() for c in aro_watch_df.columns]
+else: aro_watch_df = pd.DataFrame(columns=["id", "target_date", "watch_period", "name"])
+
+overrides_df = pd.read_sql("SELECT * FROM Manual_Overrides WHERE Target_Date = %s", conn, params=(target_date_str,))
+if not overrides_df.empty: overrides_df.columns = [c.lower() for c in overrides_df.columns]
+else: overrides_df = pd.DataFrame(columns=["id", "target_date", "name", "seat"])
+
 stats_df = pd.read_sql("SELECT Name, Position, SUM(Hours) as Total_Hours FROM Position_Log GROUP BY Name, Position", conn)
+if not stats_df.empty: stats_df.columns = [c.lower() for c in stats_df.columns]
+else: stats_df = pd.DataFrame(columns=["name", "position", "total_hours"])
 conn.close()
 
 personnel_info = {}
 admin_names = set()
 for _, r in all_personnel_df.iterrows():
-    personnel_info[r['Name']] = {'Seniority': r['Seniority'], 'Schedule': r['Schedule'], 'Core': r['Core_Manning']}
-    if r['Schedule'] == 'Admin': admin_names.add(r['Name'])
+    personnel_info[r['name']] = {'Seniority': r['seniority'], 'Schedule': r['schedule'], 'Core': r['core_manning']}
+    if r['schedule'] == 'Admin': admin_names.add(r['name'])
 
-override_dict = dict(zip(overrides_df['Name'], overrides_df['Seat']))
+override_dict = dict(zip(overrides_df['name'], overrides_df['seat'])) if not overrides_df.empty else {}
 
 stat_lookup = {}
-for _, r in stats_df.iterrows():
-    clean_name = r['Name']
-    if clean_name not in stat_lookup: stat_lookup[clean_name] = {}
-    stat_lookup[clean_name][r['Position']] = r['Total_Hours']
+if not stats_df.empty:
+    for _, r in stats_df.iterrows():
+        clean_name = r['name']
+        if clean_name not in stat_lookup: stat_lookup[clean_name] = {}
+        stat_lookup[clean_name][r['position']] = r['total_hours']
 
 def get_hours_stat(name_with_suffix, seat_name):
     clean = name_with_suffix.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
     return stat_lookup.get(clean, {}).get(seat_name, 0)
 
-db_watches = dict(zip(aro_watch_df['Watch_Period'], aro_watch_df['Name']))
+db_watches = dict(zip(aro_watch_df['watch_period'], aro_watch_df['name'])) if not aro_watch_df.empty else {}
 db_shift = selected_shift[0] 
-personnel_df = all_personnel_df[(all_personnel_df['Shift'] == db_shift) | (all_personnel_df['Shift'] == 'ADMIN')]
+personnel_df = all_personnel_df[(all_personnel_df['shift'] == db_shift) | (all_personnel_df['shift'] == 'ADMIN')]
 
-leave_df = all_leave_df[all_leave_df['Target_Date'] == target_date_str]
-ot_df = all_ot_df[all_ot_df['Target_Date'] == target_date_str]
-all_names = sorted(all_personnel_df['Name'].tolist())
-override_names_list = sorted(list(set(all_names + ot_df['Name'].tolist())))
+leave_df = all_leave_df[all_leave_df['target_date'] == target_date_str] if not all_leave_df.empty else pd.DataFrame()
+ot_df = all_ot_df[all_ot_df['target_date'] == target_date_str] if not all_ot_df.empty else pd.DataFrame()
+all_names = sorted(all_personnel_df['name'].tolist())
+
+ot_names_list = ot_df['name'].tolist() if not ot_df.empty else []
+override_names_list = sorted(list(set(all_names + ot_names_list)))
 
 officer_seats = [("CH-222", "AC"), ("E-221", "Station Captain"), ("R-221", "Crew Chief")]
 rotating_seats = [("ARO", "0700-1200 (Float)"), ("E-221", "Driver/Operator"), ("E-221", "Firefighter 1"), ("E-221", "Firefighter 2"), ("R-221", "Driver/Operator"), ("R-221", "Firefighter 1")]
@@ -144,36 +166,39 @@ all_seats_list = [f"{r} | {p}" for r, p in officer_seats + rotating_seats + cras
 # --- 3. ROSTER LOGIC ENGINE ---
 leaves_am, leaves_pm = set(), set()
 partial_leaves = []
-for _, l in leave_df.iterrows():
-    am, pm = parse_time(l['Start_Time'], l['End_Time'], float(l['Total_Hours']))
-    if am: leaves_am.add(l['Name'])
-    if pm: leaves_pm.add(l['Name'])
-    if float(l['Total_Hours']) < 24.0: partial_leaves.append(l['Name'])
+if not leave_df.empty:
+    for _, l in leave_df.iterrows():
+        am, pm = parse_time(l['start_time'], l['end_time'], float(l['total_hours']))
+        if am: leaves_am.add(l['name'])
+        if pm: leaves_pm.add(l['name'])
+        if float(l['total_hours']) < 24.0: partial_leaves.append(l['name'])
 
 trades_am_off, trades_pm_off = set(), set()
 trades_am_work, trades_pm_work = {}, {}
-for _, t in all_trades_df.iterrows():
-    am, pm = parse_time(t['Start_Time'], t['End_Time'], float(t['Total_Hours']))
-    if t['Date_1'] == target_date_str:
-        if am: trades_am_off.add(t['Name_1']); trades_am_work[t['Name_2']] = "Trade"
-        if pm: trades_pm_off.add(t['Name_1']); trades_pm_work[t['Name_2']] = "Trade"
-        if float(t['Total_Hours']) < 24.0: partial_leaves.append(t['Name_1'])
-    if t['Date_2'] == target_date_str:
-        if am: trades_am_off.add(t['Name_2']); trades_am_work[t['Name_1']] = "Trade"
-        if pm: trades_pm_off.add(t['Name_2']); trades_pm_work[t['Name_1']] = "Trade"
-        if float(t['Total_Hours']) < 24.0: partial_leaves.append(t['Name_2'])
+if not all_trades_df.empty:
+    for _, t in all_trades_df.iterrows():
+        am, pm = parse_time(t['start_time'], t['end_time'], float(t['total_hours']))
+        if t['date_1'] == target_date_str:
+            if am: trades_am_off.add(t['name_1']); trades_am_work[t['name_2']] = "Trade"
+            if pm: trades_pm_off.add(t['name_1']); trades_pm_work[t['name_2']] = "Trade"
+            if float(t['total_hours']) < 24.0: partial_leaves.append(t['name_1'])
+        if t['date_2'] == target_date_str:
+            if am: trades_am_off.add(t['name_2']); trades_am_work[t['name_1']] = "Trade"
+            if pm: trades_pm_off.add(t['name_2']); trades_pm_work[t['name_1']] = "Trade"
+            if float(t['total_hours']) < 24.0: partial_leaves.append(t['name_2'])
 
 ot_am_work, ot_pm_work = {}, {}
-for _, o in ot_df.iterrows():
-    am, pm = parse_time(o['Start_Time'], o['End_Time'], float(o['Total_Hours']))
-    suffix = "Guard" if "Guard" in o['OT_Type'] else "OT"
-    if am: ot_am_work[o['Name']] = suffix
-    if pm: ot_pm_work[o['Name']] = suffix
+if not ot_df.empty:
+    for _, o in ot_df.iterrows():
+        am, pm = parse_time(o['start_time'], o['end_time'], float(o['total_hours']))
+        suffix = "Guard" if "Guard" in o['ot_type'] else "OT"
+        if am: ot_am_work[o['name']] = suffix
+        if pm: ot_pm_work[o['name']] = suffix
 
 all_working_am, all_working_pm = [], []
 
 for _, person in personnel_df.iterrows():
-    name = person['Name']
+    name = person['name']
     if name not in leaves_am and name not in trades_am_off and name not in trades_am_work and name not in ot_am_work:
         all_working_am.append((name, ""))
     if name not in leaves_pm and name not in trades_pm_off and name not in trades_pm_work and name not in ot_pm_work:
@@ -204,10 +229,13 @@ for name, suffix in all_working_pm:
 
 admin_am.sort(key=lambda x: x["Seniority"])
 admin_pm.sort(key=lambda x: x["Seniority"])
+
 while len(am_crew) < 9 and len(admin_am) > 0: am_crew.append(admin_am.pop(0))
 while len(pm_crew) < 9 and len(admin_pm) > 0: pm_crew.append(admin_pm.pop(0))
+
 am_crew.sort(key=lambda x: x["Seniority"])
 pm_crew.sort(key=lambda x: x["Seniority"])
+
 am_crew_dict = {p["Name"]: p for p in am_crew}
 pm_crew_dict = {p["Name"]: p for p in pm_crew}
 
@@ -231,6 +259,7 @@ for i in range(len(am_pool)-1, -1, -1):
         if am_rigs[rig][pos] == "": am_rigs[rig][pos] = am_pool.pop(i)["Name"]
 
 am_pool.sort(key=lambda x: (x["Name"].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "") in partial_leaves, x["Seniority"]))
+
 for rig, pos in officer_seats:
     if am_pool and am_rigs[rig][pos] == "": am_rigs[rig][pos] = am_pool.pop(0)["Name"]
 
@@ -246,6 +275,7 @@ for rig, pos in rotating_seats:
             eligible = [p for p in rotation_pool if p["Name"].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "") not in admin_names]
             if not eligible: eligible = rotation_pool
         else: eligible = rotation_pool
+            
         eligible.sort(key=lambda x: (get_hours_stat(x["Name"], seat_name), x["Seniority"]))
         chosen = eligible[0]
         rotation_pool.remove(chosen)
@@ -312,6 +342,7 @@ for rig, pos in pm_rotating_seats:
             eligible = [p for p in structural_pm_pool if p["Name"].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "") not in admin_names]
             if not eligible: eligible = structural_pm_pool
         else: eligible = structural_pm_pool
+        
         eligible.sort(key=lambda x: (get_hours_stat(x["Name"], seat_name), x["Seniority"]))
         chosen = eligible[0]
         structural_pm_pool.remove(chosen)
@@ -329,10 +360,13 @@ def apply_cross_staffing_and_watches(rigs):
         if rigs["E-221"]["Driver/Operator"] != "": rigs["Crash-1"]["Driver"] = rigs["E-221"]["Driver/Operator"]
     else:
         if rigs["E-221"]["Driver/Operator"] != "": rigs["Crash-1"]["Crew Chief"] = rigs["E-221"]["Driver/Operator"]
+        
     if rigs["Crash-3"]["Driver"] == "" and rigs["E-221"]["Firefighter 1"] != "": rigs["Crash-3"]["Driver"] = rigs["E-221"]["Firefighter 1"]
     if rigs["Crash-8"]["Driver"] == "" and rigs["E-221"]["Firefighter 2"] != "": rigs["Crash-8"]["Driver"] = rigs["E-221"]["Firefighter 2"]
+        
     for wp in ["1200-1700", "1700-2200", "2200-0600", "0600-0700"]:
-        if wp in db_watches: rigs["ARO"][wp] = db_watches[wp]
+        if wp in db_watches:
+            rigs["ARO"][wp] = db_watches[wp]
     return rigs
 
 am_roster = apply_cross_staffing_and_watches(am_rigs)
@@ -340,7 +374,7 @@ pm_roster = apply_cross_staffing_and_watches(pm_rigs)
 
 core_count = 0
 for _, p in personnel_df.iterrows():
-    if p['Core_Manning'] and p['Name'] not in leaves_am and p['Name'] not in trades_am_off: core_count += 1
+    if p['core_manning'] and p['name'] not in leaves_am and p['name'] not in trades_am_off: core_count += 1
 total_on_duty = len(am_crew) 
 
 all_on_duty = set([p["Name"] for p in am_crew] + [p["Name"] for p in pm_crew])
@@ -367,6 +401,7 @@ with tab_roster:
         output = f"### {rig_name}\n"
         for position in am_roster[rig_name]:
             am_name, pm_name = am_roster[rig_name][position], pm_roster[rig_name][position]
+            
             if rig_name == "ARO" and position == "0700-1200 (Float)":
                 if am_name == "": am_name = "VACANT"
                 if pm_name == "": pm_name = "VACANT"
@@ -416,6 +451,9 @@ with tab_roster:
         display_rig("Crash-4", "warning")
         display_rig("Crash-8", "warning")
         
+    # ==========================================
+    # STATION DETAILS INTEGRATION
+    # ==========================================
     st.divider()
     day_of_week = target_date.strftime("%A")
     st.subheader(f"🧹 Station Details ({day_of_week})")
@@ -464,7 +502,8 @@ with tab_roster:
         for d in daily_details[day_of_week]:
             assigned_names = resolve_detail_names(d["Rig"], d["Seat"])
             st.markdown(f"<div style='margin-bottom: 14px;'><div style='font-size: 1.25em; font-weight: bold;'>{d['Task']}</div><div style='font-size: 0.9em; opacity: 0.8;'>↳ <b>Assigned:</b> {d['Pos_Name']} ({assigned_names})</div></div>", unsafe_allow_html=True)
-    else: st.info(f"No specific station deep-cleaning details are officially assigned for {day_of_week}s.")
+    else:
+        st.info(f"No specific station deep-cleaning details are officially assigned for {day_of_week}s.")
 
     st.divider()
     if st.button("💾 Commit Today's Roster to History", type="primary", use_container_width=True):
@@ -533,17 +572,18 @@ with tab_calendar:
                     elif cal_shift_mod == 1: shift_color, shift_name, day_shift = "#2196F3", "B-Shift", "B"
                     else: shift_color, shift_name, day_shift = "#F44336", "C-Shift", "C"
 
-                    day_leave = all_leave_df[all_leave_df['Target_Date'] == date_str]
-                    day_ot = all_ot_df[all_ot_df['Target_Date'] == date_str]
+                    day_leave = all_leave_df[all_leave_df['target_date'] == date_str] if not all_leave_df.empty else pd.DataFrame()
+                    day_ot = all_ot_df[all_ot_df['target_date'] == date_str] if not all_ot_df.empty else pd.DataFrame()
                     
                     day_trades = []
-                    for _, t in all_trades_df.iterrows():
-                        if t['Date_1'] == date_str: day_trades.append({'id': t['id'], 'Off_Name': t['Name_1'], 'Work_Name': t['Name_2'], 'Start_Time': t['Start_Time'], 'End_Time': t['End_Time'], 'Total_Hours': t['Total_Hours']})
-                        elif t['Date_2'] == date_str: day_trades.append({'id': t['id'], 'Off_Name': t['Name_2'], 'Work_Name': t['Name_1'], 'Start_Time': t['Start_Time'], 'End_Time': t['End_Time'], 'Total_Hours': t['Total_Hours']})
+                    if not all_trades_df.empty:
+                        for _, t in all_trades_df.iterrows():
+                            if t['date_1'] == date_str: day_trades.append({'id': t['id'], 'Off_Name': t['name_1'], 'Work_Name': t['name_2'], 'Start_Time': t['start_time'], 'End_Time': t['end_time'], 'Total_Hours': t['total_hours']})
+                            elif t['date_2'] == date_str: day_trades.append({'id': t['id'], 'Off_Name': t['name_2'], 'Work_Name': t['name_1'], 'Start_Time': t['start_time'], 'End_Time': t['end_time'], 'Total_Hours': t['total_hours']})
                     
-                    core_names = all_personnel_df[(all_personnel_df['Shift'] == day_shift) & (all_personnel_df['Core_Manning'] == True)]['Name'].tolist()
+                    core_names = all_personnel_df[(all_personnel_df['shift'] == day_shift) & (all_personnel_df['core_manning'] == True)]['name'].tolist()
                     
-                    full_day_leaves = [l['Name'] for _, l in day_leave.iterrows() if float(l['Total_Hours']) >= 24.0]
+                    full_day_leaves = [l['name'] for _, l in day_leave.iterrows() if float(l['total_hours']) >= 24.0] if not day_leave.empty else []
                     full_day_trade_offs = [t['Off_Name'] for t in day_trades if float(t['Total_Hours']) >= 24.0]
                     
                     core_on_leave = len([n for n in full_day_leaves if n in core_names])
@@ -551,7 +591,7 @@ with tab_calendar:
                     est_manning = len(core_names) - core_on_leave - core_trading_off + len(day_ot) + len(day_trades)
                     
                     if est_manning < 9:
-                        admin_names_list = all_personnel_df[all_personnel_df['Shift'] == 'ADMIN']['Name'].tolist()
+                        admin_names_list = all_personnel_df[all_personnel_df['shift'] == 'ADMIN']['name'].tolist()
                         admins_on_leave = len([n for n in full_day_leaves if n in admin_names_list]) + len([n for n in full_day_trade_offs if n in admin_names_list])
                         available_admins = len(admin_names_list) - admins_on_leave
                         est_manning += min((9 - est_manning), available_admins)
@@ -561,29 +601,31 @@ with tab_calendar:
                     with st.container(border=True):
                         st.markdown(f"<div style='background-color:{shift_color}; color:white; padding: 2px 4px; border-radius: 3px; font-size: 0.85em; margin-bottom: 4px; text-align: center;'><b>{day} | {shift_name}</b></div><div style='color:{manning_color}; font-size:0.9em; font-weight:bold; margin-bottom: 4px;'>Manning: {est_manning}</div>", unsafe_allow_html=True)
                         
-                        for _, l in day_leave.iterrows():
-                            hrs = int(l['Total_Hours']) if l['Total_Hours'] % 1 == 0 else l['Total_Hours']
-                            with st.popover(f"{get_icon(l['Leave_Type'])} {l['Name']} ({hrs}h)", use_container_width=True):
-                                st.markdown(f"**{l['Leave_Type']}**")
-                                st.write(f"⏱️ {l['Start_Time']} - {l['End_Time']}")
-                                if st.button("🗑️ Cancel Leave", key=f"del_leave_{l['id']}", type="primary", use_container_width=True):
-                                    conn = get_db_connection()
-                                    conn.cursor().execute("DELETE FROM Leave_Ledger WHERE id = %s", (l['id'],))
-                                    conn.commit()
-                                    conn.close()
-                                    st.rerun()
-                                    
-                        for _, o in day_ot.iterrows():
-                            hrs = int(o['Total_Hours']) if o['Total_Hours'] % 1 == 0 else o['Total_Hours']
-                            with st.popover(f"{get_icon(o['OT_Type'])} {o['Name']} ({hrs}h)", use_container_width=True):
-                                st.markdown(f"**{o['OT_Type']}**")
-                                st.write(f"⏱️ {o['Start_Time']} - {o['End_Time']}")
-                                if st.button("🗑️ Cancel OT", key=f"del_ot_{o['id']}", type="primary", use_container_width=True):
-                                    conn = get_db_connection()
-                                    conn.cursor().execute("DELETE FROM Overtime_Log WHERE id = %s", (o['id'],))
-                                    conn.commit()
-                                    conn.close()
-                                    st.rerun()
+                        if not day_leave.empty:
+                            for _, l in day_leave.iterrows():
+                                hrs = int(l['total_hours']) if l['total_hours'] % 1 == 0 else l['total_hours']
+                                with st.popover(f"{get_icon(l['leave_type'])} {l['name']} ({hrs}h)", use_container_width=True):
+                                    st.markdown(f"**{l['leave_type']}**")
+                                    st.write(f"⏱️ {l['start_time']} - {l['end_time']}")
+                                    if st.button("🗑️ Cancel Leave", key=f"del_leave_{l['id']}", type="primary", use_container_width=True):
+                                        conn = get_db_connection()
+                                        conn.cursor().execute("DELETE FROM Leave_Ledger WHERE id = %s", (l['id'],))
+                                        conn.commit()
+                                        conn.close()
+                                        st.rerun()
+                                        
+                        if not day_ot.empty:
+                            for _, o in day_ot.iterrows():
+                                hrs = int(o['total_hours']) if o['total_hours'] % 1 == 0 else o['total_hours']
+                                with st.popover(f"{get_icon(o['ot_type'])} {o['name']} ({hrs}h)", use_container_width=True):
+                                    st.markdown(f"**{o['ot_type']}**")
+                                    st.write(f"⏱️ {o['start_time']} - {o['end_time']}")
+                                    if st.button("🗑️ Cancel OT", key=f"del_ot_{o['id']}", type="primary", use_container_width=True):
+                                        conn = get_db_connection()
+                                        conn.cursor().execute("DELETE FROM Overtime_Log WHERE id = %s", (o['id'],))
+                                        conn.commit()
+                                        conn.close()
+                                        st.rerun()
                                     
                         for t in day_trades:
                             hrs = int(t['Total_Hours']) if t['Total_Hours'] % 1 == 0 else t['Total_Hours']
@@ -714,7 +756,7 @@ with tab_data_entry:
             for _, ov in overrides_df.iterrows():
                 with st.container(border=True):
                     cols = st.columns([4, 1])
-                    cols[0].markdown(f"**{ov['Name']}** ➡️ {ov['Seat']}")
+                    cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']}")
                     if cols[1].button("🗑️", key=f"del_ov_{ov['id']}", use_container_width=True):
                         conn = get_db_connection()
                         conn.cursor().execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
@@ -730,7 +772,7 @@ with tab_stats:
     st.markdown("This tracker automatically logs how many hours each person has spent in the rotating positions, as well as the number of times they have pulled each Alarm Room watch.")
     
     if not stats_df.empty:
-        pivot_df = stats_df.pivot(index='Name', columns='Position', values='Total_Hours').fillna(0)
+        pivot_df = stats_df.pivot(index='name', columns='position', values='total_hours').fillna(0)
         
         st.markdown("#### 🕒 Structural Seat Balance (Total Hours)")
         display_cols = [c for c in ["E-221 Driver/Operator", "E-221 Firefighter 1", "E-221 Firefighter 2", "R-221 Driver/Operator", "R-221 Firefighter 1", "ARO 0700-1200 (Float)"] if c in pivot_df.columns]
