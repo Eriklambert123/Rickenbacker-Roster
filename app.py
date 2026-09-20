@@ -700,9 +700,8 @@ with tab_calendar:
                                             st.rerun()
                                             
                         # --- DASHED LINE SEPARATOR --- 
-                        # Only draw if there is Leave AND (OT or Trades) on the same day
                         if not day_leave.empty and (not day_ot.empty or day_trades):
-                            st.markdown("<div style='border-top: 2px dashed #e0e0e0; margin: 8px 0;'></div>", unsafe_allow_html=True)
+                            st.markdown("<div style='padding: 12px 0px;'><div style='border-top: 3px dashed #888;'></div></div>", unsafe_allow_html=True)
                                         
                         # --- EXTRA DUTY (OT) ---
                         if not day_ot.empty:
