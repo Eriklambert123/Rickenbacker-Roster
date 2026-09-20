@@ -684,6 +684,7 @@ with tab_calendar:
                     with st.container(border=True):
                         st.markdown(f"<div style='background-color:{shift_color}; color:white; padding: 2px 4px; border-radius: 3px; font-size: 0.85em; margin-bottom: 4px; text-align: center;'><b>{day} | {shift_name}</b></div><div style='color:{manning_color}; font-size:0.9em; font-weight:bold; margin-bottom: 4px;'>Manning: {est_manning}</div>", unsafe_allow_html=True)
                         
+                        # --- OFF DUTY (LEAVES) ---
                         if not day_leave.empty:
                             for _, l in day_leave.iterrows():
                                 hrs = int(l['total_hours']) if l['total_hours'] % 1 == 0 else l['total_hours']
@@ -697,7 +698,13 @@ with tab_calendar:
                                             conn.commit()
                                             conn.close()
                                             st.rerun()
+                                            
+                        # --- DASHED LINE SEPARATOR --- 
+                        # Only draw if there is Leave AND (OT or Trades) on the same day
+                        if not day_leave.empty and (not day_ot.empty or day_trades):
+                            st.markdown("<div style='border-top: 2px dashed #e0e0e0; margin: 8px 0;'></div>", unsafe_allow_html=True)
                                         
+                        # --- EXTRA DUTY (OT) ---
                         if not day_ot.empty:
                             for _, o in day_ot.iterrows():
                                 hrs = int(o['total_hours']) if o['total_hours'] % 1 == 0 else o['total_hours']
@@ -712,6 +719,7 @@ with tab_calendar:
                                             conn.close()
                                             st.rerun()
                                     
+                        # --- SHIFT TRADES ---
                         for t in day_trades:
                             hrs = int(t['Total_Hours']) if t['Total_Hours'] % 1 == 0 else t['Total_Hours']
                             time_str = f"{t['Start_Time']} - {t['End_Time']}" if hrs < 24 else "0700 - 0700"
