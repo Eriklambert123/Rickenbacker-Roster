@@ -99,7 +99,7 @@ conn.commit()
 import warnings
 warnings.filterwarnings('ignore')
 
-# Read Data & Standardize Column Names to Lowercase to Prevent Postgres Case Errors
+# Read Data & Standardize Column Names to Lowercase
 all_personnel_df = pd.read_sql("SELECT * FROM Personnel", conn)
 all_personnel_df.columns = [c.lower() for c in all_personnel_df.columns]
 
@@ -149,7 +149,12 @@ def get_hours_stat(name_with_suffix, seat_name):
 
 db_watches = dict(zip(aro_watch_df['watch_period'], aro_watch_df['name'])) if not aro_watch_df.empty else {}
 db_shift = selected_shift[0] 
-personnel_df = all_personnel_df[(all_personnel_df['shift'] == db_shift) | (all_personnel_df['shift'] == 'ADMIN')]
+
+# FIX: Weekend Admin Exclusion Check
+if target_date.weekday() < 5:  # Monday to Friday
+    personnel_df = all_personnel_df[(all_personnel_df['shift'] == db_shift) | (all_personnel_df['shift'] == 'ADMIN')]
+else:  # Saturday and Sunday
+    personnel_df = all_personnel_df[(all_personnel_df['shift'] == db_shift)]
 
 leave_df = all_leave_df[all_leave_df['target_date'] == target_date_str] if not all_leave_df.empty else pd.DataFrame()
 ot_df = all_ot_df[all_ot_df['target_date'] == target_date_str] if not all_ot_df.empty else pd.DataFrame()
@@ -258,10 +263,28 @@ for i in range(len(am_pool)-1, -1, -1):
         rig, pos = override_dict[clean_name].split(" | ")
         if am_rigs[rig][pos] == "": am_rigs[rig][pos] = am_pool.pop(i)["Name"]
 
-am_pool.sort(key=lambda x: (x["Name"].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "") in partial_leaves, x["Seniority"]))
-
+# FIX: Rank-Aware AM Officer Assignment
 for rig, pos in officer_seats:
-    if am_pool and am_rigs[rig][pos] == "": am_rigs[rig][pos] = am_pool.pop(0)["Name"]
+    if am_pool and am_rigs[rig][pos] == "":
+        chosen = None
+        if rig == "CH-222":
+            cands = [p for p in am_pool if p['Seniority'] <= 4]
+            if cands: chosen = cands[0]
+        elif rig == "E-221":
+            cands = [p for p in am_pool if 6 <= p['Seniority'] <= 8]
+            if cands: chosen = cands[0]
+        elif rig == "R-221":
+            cands = [p for p in am_pool if p['Seniority'] == 5] # Admin Captain priority
+            if not cands: cands = [p for p in am_pool if 9 <= p['Seniority'] <= 10] # Lieutenant fallback
+            if cands: chosen = cands[0]
+        
+        # Fallback to pure seniority if ranks are missing
+        if not chosen:
+            am_pool.sort(key=lambda x: (x["Name"].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "") in partial_leaves, x["Seniority"]))
+            chosen = am_pool[0]
+            
+        am_rigs[rig][pos] = chosen["Name"]
+        am_pool.remove(chosen)
 
 rotation_pool = []
 while am_pool and len(rotation_pool) < len([p for r, p in rotating_seats if am_rigs[r][p] == ""]):
@@ -328,10 +351,28 @@ for rig, pos in crash_seats[:num_crash_pm]:
                 assigned_pm_names.add(p)
 
 structural_pm_pool = [pm_crew_dict[n] for n in pm_names if n not in assigned_pm_names]
-structural_pm_pool.sort(key=lambda x: (x["Name"].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "") in partial_leaves, x["Seniority"]))
 
+# FIX: Rank-Aware PM Officer Assignment
 for rig, pos in officer_seats:
-    if pm_rigs[rig][pos] == "" and structural_pm_pool: pm_rigs[rig][pos] = structural_pm_pool.pop(0)["Name"]
+    if pm_rigs[rig][pos] == "" and structural_pm_pool:
+        chosen = None
+        if rig == "CH-222":
+            cands = [p for p in structural_pm_pool if p['Seniority'] <= 4]
+            if cands: chosen = cands[0]
+        elif rig == "E-221":
+            cands = [p for p in structural_pm_pool if 6 <= p['Seniority'] <= 8]
+            if cands: chosen = cands[0]
+        elif rig == "R-221":
+            cands = [p for p in structural_pm_pool if p['Seniority'] == 5]
+            if not cands: cands = [p for p in structural_pm_pool if 9 <= p['Seniority'] <= 10]
+            if cands: chosen = cands[0]
+        
+        if not chosen:
+            structural_pm_pool.sort(key=lambda x: (x["Name"].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "") in partial_leaves, x["Seniority"]))
+            chosen = structural_pm_pool[0]
+            
+        pm_rigs[rig][pos] = chosen["Name"]
+        structural_pm_pool.remove(chosen)
 
 pm_rotating_seats = [("ARO", "0700-1200 (Float)"), ("E-221", "Driver/Operator"), ("E-221", "Firefighter 1"), ("E-221", "Firefighter 2"), ("R-221", "Driver/Operator"), ("R-221", "Firefighter 1")]
 for rig, pos in pm_rotating_seats:
