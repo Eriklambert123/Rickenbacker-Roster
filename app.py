@@ -226,13 +226,25 @@ if not ot_df.empty:
         if pm: ot_pm_work[o['name']] = suffix
 
 all_working_am, all_working_pm = [], []
+current_weekday = target_date.weekday() # 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
 
 for _, person in personnel_df.iterrows():
     name = person['name']
+    
+    # NEW ADMIN SCHEDULE ENGINE
+    admin_pm_active = True
+    if person['shift'] == 'ADMIN':
+        if name == 'Garver' and current_weekday != 2:  # Garver 24h on Wed (2)
+            admin_pm_active = False
+        if name == 'McNamara' and current_weekday != 1: # McNamara 24h on Tue (1)
+            admin_pm_active = False
+            
     if name not in leaves_am and name not in trades_am_off and name not in trades_am_work and name not in ot_am_work:
         all_working_am.append((name, ""))
-    if name not in leaves_pm and name not in trades_pm_off and name not in trades_pm_work and name not in ot_pm_work:
-        all_working_pm.append((name, ""))
+        
+    if admin_pm_active:
+        if name not in leaves_pm and name not in trades_pm_off and name not in trades_pm_work and name not in ot_pm_work:
+            all_working_pm.append((name, ""))
 
 for name, suffix in trades_am_work.items(): all_working_am.append((name, suffix))
 for name, suffix in trades_pm_work.items(): all_working_pm.append((name, suffix))
