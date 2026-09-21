@@ -190,7 +190,7 @@ crash_seats = [("Crash-4", "Driver"), ("Crash-1", "Driver"), ("Crash-3", "Driver
 all_seats_list = [
     "CH-222 | AC", "E-221 | Station Captain", "E-221 | Driver/Operator", "E-221 | Firefighter 1", "E-221 | Firefighter 2",
     "R-221 | Crew Chief", "R-221 | Driver/Operator", "R-221 | Firefighter 1", "ARO | 0700-1200 (Float)",
-    "Crash-1 | Driver", "Crash-3 | Driver", "Crash-4 | Driver", "Crash-8 | Driver"
+    "Crash-1 | Driver", "Crash-3 | Driver", "Crash-4 | Driver", "Crash-8 | Driver", "Tanker | Crew Chief", "Tanker | Driver"
 ]
 
 # --- 3. ROSTER LOGIC ENGINE ---
@@ -288,7 +288,8 @@ def get_empty_rigs():
         "R-221": {"Crew Chief": "", "Driver/Operator": "", "Firefighter 1": ""}, 
         "E-221": {"Station Captain": "", "Driver/Operator": "", "Firefighter 1": "", "Firefighter 2": ""}, 
         "ARO": {"0700-1200 (Float)": "", "1200-1700": "TBD (Draw)", "1700-2200": "TBD (Draw)", "2200-0600": "TBD (Draw)", "0600-0700": "TBD (Draw)"},
-        "Crash-4": {"Crew Chief": "", "Driver": ""}, "Crash-1": {"Crew Chief": "", "Driver": ""}, "Crash-3": {"Driver": ""}, "Crash-8": {"Driver": ""}
+        "Crash-4": {"Crew Chief": "", "Driver": ""}, "Crash-1": {"Crew Chief": "", "Driver": ""}, "Crash-3": {"Driver": ""}, "Crash-8": {"Driver": ""},
+        "Tanker": {"Crew Chief": "", "Driver": ""}
     }
 
 # --- 3a. ASSIGN AM ROSTER ---
@@ -428,6 +429,7 @@ for rig, pos in crash_seats:
     if pm_rigs[rig][pos] == "" and structural_pm_pool: pm_rigs[rig][pos] = structural_pm_pool.pop(0)["Name"]
 
 def apply_cross_staffing_and_watches(rigs):
+    # Crash Engines
     if rigs["Crash-4"]["Driver"] == "":
         if rigs["E-221"]["Station Captain"] != "": rigs["Crash-4"]["Driver"] = rigs["E-221"]["Station Captain"]
     else:
@@ -440,6 +442,13 @@ def apply_cross_staffing_and_watches(rigs):
     if rigs["Crash-3"]["Driver"] == "" and rigs["E-221"]["Firefighter 1"] != "": rigs["Crash-3"]["Driver"] = rigs["E-221"]["Firefighter 1"]
     if rigs["Crash-8"]["Driver"] == "" and rigs["E-221"]["Firefighter 2"] != "": rigs["Crash-8"]["Driver"] = rigs["E-221"]["Firefighter 2"]
         
+    # Tanker Cross-Staffing
+    if rigs["Tanker"]["Crew Chief"] == "" and rigs["R-221"]["Crew Chief"] != "": 
+        rigs["Tanker"]["Crew Chief"] = rigs["R-221"]["Crew Chief"]
+    if rigs["Tanker"]["Driver"] == "" and rigs["R-221"]["Firefighter 1"] != "": 
+        rigs["Tanker"]["Driver"] = rigs["R-221"]["Firefighter 1"]
+
+    # Watches
     for wp in ["1200-1700", "1700-2200", "2200-0600", "0600-0700"]:
         if wp in db_watches:
             rigs["ARO"][wp] = db_watches[wp]
@@ -530,6 +539,7 @@ with tab_roster:
     with rig_col2: 
         display_rig("R-221", "info")
         display_rig("E-221", "success")
+        display_rig("Tanker", "info")
     with rig_col3: 
         display_rig("Crash-1", "warning")
         display_rig("Crash-3", "warning")
@@ -598,6 +608,7 @@ with tab_roster:
                     
                     if rig == "ARO" and pos != "0700-1200 (Float)": continue
                     if rig in ["Crash-4", "Crash-1"] and pos == "Crew Chief": continue 
+                    if rig == "Tanker": continue # Prevents double-logging hours for the cross-staffed Rescue crew
                     
                     if am_name and am_name == pm_name:
                         clean_name = am_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
