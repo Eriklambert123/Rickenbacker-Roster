@@ -14,14 +14,14 @@ st.set_page_config(page_title="Rickenbacker Fire Department Management", layout=
 DB_URI = st.secrets["DB_URI"]
 ADMIN_PIN = st.secrets.get("ADMIN_PIN", "2026") # Defaults to 2026 if not set in secrets
 
+# Removed aggressive vertical block gap to let layout breathe naturally
 st.markdown("""
 <style>
-[data-testid="column"] { padding: 0 0.15rem !important; }
-[data-testid="stVerticalBlock"] { gap: 0.2rem !important; }
-[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 0.25rem !important; }
-[data-testid="stPopover"] button { padding: 2px 4px !important; min-height: auto !important; }
-[data-testid="stPopover"] button p { font-size: 0.75rem !important; white-space: normal !important; line-height: 1.2 !important; }
-hr { margin: 0.5em 0 !important; }
+[data-testid="column"] { padding: 0 0.3rem !important; }
+[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 0.5rem !important; }
+[data-testid="stPopover"] button { padding: 4px 8px !important; min-height: auto !important; }
+[data-testid="stPopover"] button p { font-size: 0.9rem !important; white-space: normal !important; line-height: 1.2 !important; }
+hr { margin: 0.8em 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -180,9 +180,6 @@ leave_df = all_leave_df[all_leave_df['target_date'] == target_date_str] if not a
 ot_df = all_ot_df[all_ot_df['target_date'] == target_date_str] if not all_ot_df.empty else pd.DataFrame()
 all_names = sorted(all_personnel_df['name'].tolist())
 
-ot_names_list = ot_df['name'].tolist() if not ot_df.empty else []
-override_names_list = sorted(list(set(all_names + ot_names_list)))
-
 officer_seats = [("CH-222", "AC"), ("E-221", "Station Captain"), ("R-221", "Crew Chief")]
 rotating_seats = [("ARO", "0700-1200 (Float)"), ("E-221", "Driver/Operator"), ("E-221", "Firefighter 1"), ("E-221", "Firefighter 2"), ("R-221", "Driver/Operator"), ("R-221", "Firefighter 1")]
 crash_seats = [("Crash-4", "Driver"), ("Crash-1", "Driver"), ("Crash-3", "Driver"), ("Crash-8", "Driver")]
@@ -282,6 +279,16 @@ pm_crew.sort(key=lambda x: x["Seniority"])
 
 am_crew_dict = {p["Name"]: p for p in am_crew}
 pm_crew_dict = {p["Name"]: p for p in pm_crew}
+
+# ON-DUTY OVERRIDE LIST GENERATOR 
+# Automatically captures any OT/Trades and inherently excludes anyone on Leave
+all_on_duty = set([p["Name"] for p in am_crew] + [p["Name"] for p in pm_crew])
+on_duty_clean_names = set()
+for name in all_on_duty:
+    clean_name = name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
+    if clean_name and clean_name != "VACANT":
+        on_duty_clean_names.add(clean_name)
+on_duty_dropdown_list = sorted(list(on_duty_clean_names))
 
 def get_empty_rigs():
     return {
@@ -463,7 +470,6 @@ for _, p in personnel_df.iterrows():
     if p['core_manning'] and p['name'] not in leaves_am and p['name'] not in trades_am_off: core_count += 1
 total_on_duty = len(am_crew) 
 
-all_on_duty = set([p["Name"] for p in am_crew] + [p["Name"] for p in pm_crew])
 excluded_watches = {am_roster["CH-222"]["AC"], pm_roster["CH-222"]["AC"], am_roster["E-221"]["Station Captain"], pm_roster["E-221"]["Station Captain"], am_roster["ARO"]["0700-1200 (Float)"], pm_roster["ARO"]["0700-1200 (Float)"]}
 eligible_aro_names = sorted([name for name in all_on_duty if name not in excluded_watches and name != ""])
 
@@ -526,13 +532,18 @@ with tab_roster:
                     continue
 
                 if is_admin:
-                    c1, c2 = st.columns([4, 1])
+                    # Widened column ratio to [6, 1] to stop early text wrap next to popover buttons
+                    c1, c2 = st.columns([6, 1])
                     c1.markdown(disp_text)
                     pop_icon = "🔒" if is_locked else "⚙️"
                     
                     with c2.popover(pop_icon):
-                        new_val = st.selectbox("Lock to person:", ["-- Auto --"] + override_names_list, 
-                            index=(["-- Auto --"] + override_names_list).index(locked_by) if is_locked else 0,
+                        options = ["-- Auto --"] + on_duty_dropdown_list
+                        if is_locked and locked_by not in options:
+                            options.append(locked_by)
+                            
+                        new_val = st.selectbox("Lock to person:", options, 
+                            index=options.index(locked_by) if is_locked else 0,
                             key=f"ov_{rig_name}_{position}")
                             
                         if st.button("Save", key=f"btn_{rig_name}_{position}", type="primary", use_container_width=True):
@@ -917,9 +928,9 @@ if is_admin:
         ov_col1, ov_col2 = st.columns([1, 1])
         with ov_col1:
             with st.form("override_form", clear_on_submit=True):
-                # Target Date is now inherently linked to the main sidebar date picker
+                # Target Date is inherently linked to the main sidebar date picker
                 st.markdown(f"**Target Date:** {target_date_str}")
-                o_name = st.selectbox("Personnel (Includes Write-Ins)", override_names_list, key="ov_n")
+                o_name = st.selectbox("Personnel", on_duty_dropdown_list, key="ov_n")
                 o_seat = st.selectbox("Assign to Seat", all_seats_list, key="ov_s")
                 
                 if st.form_submit_button("Lock Seat Override"):
