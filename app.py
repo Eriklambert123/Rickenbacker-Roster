@@ -57,7 +57,7 @@ def parse_time(start_str, end_str, hrs):
 
 # --- 1. SIDEBAR, AUTH, & SHIFT AUTOCALC ---
 st.sidebar.header("Dashboard Controls")
-target_date = st.sidebar.date_input("Select Target Date", datetime.date(2026, 9, 23))
+target_date = st.sidebar.date_input("Select Target Date", datetime.date.today())
 target_date_str = target_date.strftime("%Y-%m-%d")
 
 anchor_date = datetime.date(2026, 9, 16) 
@@ -154,6 +154,7 @@ for _, r in all_personnel_df.iterrows():
     if r['schedule'] == 'Admin': admin_names.add(r['name'])
 
 override_dict = dict(zip(overrides_df['name'], overrides_df['seat'])) if not overrides_df.empty else {}
+seat_to_override = {v: k for k, v in override_dict.items()}
 
 stat_lookup = {}
 if not stats_df.empty:
@@ -491,47 +492,90 @@ with tab_roster:
     st.divider()
     rig_col1, rig_col2, rig_col3 = st.columns(3)
 
+    color_map = {"error": "#d32f2f", "success": "#2e7d32", "info": "#0288d1", "warning": "#ed6c02"}
+
     def display_rig(rig_name, box_type):
-        output = f"### {rig_name}\n"
-        for position in am_roster[rig_name]:
-            am_name, pm_name = am_roster[rig_name][position], pm_roster[rig_name][position]
+        with st.container(border=True):
+            st.markdown(f"<h4 style='color: {color_map[box_type]}; margin-top: 0; padding-bottom: 0;'>{rig_name}</h4>", unsafe_allow_html=True)
             
-            if rig_name == "ARO" and position == "0700-1200 (Float)":
-                if am_name == "": am_name = "VACANT"
-                if pm_name == "": pm_name = "VACANT"
-            elif am_name == "" and pm_name == "": continue
-            
-            if rig_name == "ARO" and position != "0700-1200 (Float)": output += f"**{position}:** {am_name}\n\n"
-            elif am_name == pm_name: output += f"**{position}:** {am_name}\n\n"
-            else: output += f"**{position}:** {am_name}  >>  {pm_name} (1500)\n\n"
+            for position in am_roster[rig_name]:
+                am_name, pm_name = am_roster[rig_name][position], pm_roster[rig_name][position]
                 
-        if box_type == "info": st.info(output)
-        elif box_type == "success": st.success(output)
-        elif box_type == "error": st.error(output)
-        elif box_type == "warning": st.warning(output)
-        
-        if rig_name == "ARO" and is_admin:
-            with st.popover("🎲 Draw Watches", use_container_width=True):
-                with st.form(f"aro_draw_form_{target_date_str}"):
-                    st.write("**Assign Watches:**")
-                    watch_options = ["--"] + eligible_aro_names
-                    def get_idx(val): return watch_options.index(val) if val in watch_options else 0
+                if rig_name == "ARO" and position == "0700-1200 (Float)":
+                    if am_name == "": am_name = "VACANT"
+                    if pm_name == "": pm_name = "VACANT"
+                elif am_name == "" and pm_name == "": continue
+                
+                # Format the text
+                if rig_name == "ARO" and position != "0700-1200 (Float)": 
+                    disp_text = f"**{position}:** {am_name}"
+                elif am_name == pm_name: 
+                    disp_text = f"**{position}:** {am_name}"
+                else: 
+                    disp_text = f"**{position}:** {am_name}  >>  {pm_name} (1500)"
+
+                seat_name = f"{rig_name} | {position}"
+                is_locked = seat_name in seat_to_override
+                locked_by = seat_to_override.get(seat_name)
+
+                if is_locked: disp_text = f"🔒 " + disp_text
+
+                # Standard read-only text for ARO Watches (Managed via the Draw table)
+                if rig_name == "ARO" and position != "0700-1200 (Float)":
+                    st.markdown(disp_text)
+                    continue
+
+                if is_admin:
+                    c1, c2 = st.columns([4, 1])
+                    c1.markdown(disp_text)
+                    pop_icon = "🔒" if is_locked else "⚙️"
                     
-                    w1 = st.selectbox("1200-1700", watch_options, index=get_idx(db_watches.get("1200-1700")))
-                    w2 = st.selectbox("1700-2200", watch_options, index=get_idx(db_watches.get("1700-2200")))
-                    w3 = st.selectbox("2200-0600", watch_options, index=get_idx(db_watches.get("2200-0600")))
-                    w4 = st.selectbox("0600-0700", watch_options, index=get_idx(db_watches.get("0600-0700")))
-                    
-                    if st.form_submit_button("Save Watches"):
-                        conn = get_db_connection()
-                        c = conn.cursor()
-                        c.execute("DELETE FROM ARO_Watch WHERE Target_Date = %s", (target_date_str,))
-                        inserts = [(target_date_str, "1200-1700", w1), (target_date_str, "1700-2200", w2), (target_date_str, "2200-0600", w3), (target_date_str, "0600-0700", w4)]
-                        inserts = [w for w in inserts if w[2] != "--"]
-                        if inserts: c.executemany("INSERT INTO ARO_Watch (Target_Date, Watch_Period, Name) VALUES (%s, %s, %s)", inserts)
-                        conn.commit()
-                        conn.close()
-                        st.rerun()
+                    with c2.popover(pop_icon):
+                        new_val = st.selectbox("Lock to person:", ["-- Auto --"] + override_names_list, 
+                            index=(["-- Auto --"] + override_names_list).index(locked_by) if is_locked else 0,
+                            key=f"ov_{rig_name}_{position}")
+                            
+                        if st.button("Save", key=f"btn_{rig_name}_{position}", type="primary", use_container_width=True):
+                            conn = get_db_connection()
+                            c = conn.cursor()
+                            # Delete existing locks for this seat
+                            c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, seat_name))
+                            
+                            # If a new person is selected, clear them from any other locked seats and assign them here
+                            if new_val != "-- Auto --":
+                                c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, new_val))
+                                c.execute("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", (target_date_str, new_val, seat_name))
+                                
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
+                else:
+                    st.markdown(disp_text)
+            
+            # Watch draw button for ARO
+            if rig_name == "ARO" and is_admin:
+                st.markdown("<hr style='margin: 0.5em 0;'>", unsafe_allow_html=True)
+                with st.popover("🎲 Draw Watches", use_container_width=True):
+                    with st.form(f"aro_draw_form_{target_date_str}"):
+                        st.write("**Assign Watches:**")
+                        watch_options = ["--"] + eligible_aro_names
+                        def get_idx(val): return watch_options.index(val) if val in watch_options else 0
+                        
+                        w1 = st.selectbox("1200-1700", watch_options, index=get_idx(db_watches.get("1200-1700")))
+                        w2 = st.selectbox("1700-2200", watch_options, index=get_idx(db_watches.get("1700-2200")))
+                        w3 = st.selectbox("2200-0600", watch_options, index=get_idx(db_watches.get("2200-0600")))
+                        w4 = st.selectbox("0600-0700", watch_options, index=get_idx(db_watches.get("0600-0700")))
+                        
+                        if st.form_submit_button("Save Watches"):
+                            conn = get_db_connection()
+                            c = conn.cursor()
+                            c.execute("DELETE FROM ARO_Watch WHERE Target_Date = %s", (target_date_str,))
+                            inserts = [(target_date_str, "1200-1700", w1), (target_date_str, "1700-2200", w2), (target_date_str, "2200-0600", w3), (target_date_str, "0600-0700", w4)]
+                            inserts = [w for w in inserts if w[2] != "--"]
+                            if inserts: c.executemany("INSERT INTO ARO_Watch (Target_Date, Watch_Period, Name) VALUES (%s, %s, %s)", inserts)
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
 
     with rig_col1: 
         display_rig("CH-222", "error")
@@ -758,7 +802,11 @@ if is_admin:
                 st.markdown("#### 🏖️ Enter Leave")
                 l_date_range = st.date_input("Target Date(s)", value=(target_date, target_date))
                 l_name = st.selectbox("Personnel", all_names)
-                l_type = st.selectbox("Leave Type", ["Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave", "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical", "Personal Leave", "Disability Leave"])
+                
+                # Alphabetized Leave Types
+                leave_types = sorted(["Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave", "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical", "Personal Leave", "Disability Leave"])
+                l_type = st.selectbox("Leave Type", leave_types)
+                
                 l_24h = st.checkbox("Full 24h Shift (0700-0700)", value=True, key="l_24")
                 time_col1, time_col2 = st.columns(2)
                 l_start = time_col1.text_input("Start Time (e.g., 0700)", "0700", key="l_s")
@@ -869,13 +917,18 @@ if is_admin:
         ov_col1, ov_col2 = st.columns([1, 1])
         with ov_col1:
             with st.form("override_form", clear_on_submit=True):
-                o_date_ov = st.date_input("Target Date", value=target_date, key="ov_d")
+                # Target Date is now inherently linked to the main sidebar date picker
+                st.markdown(f"**Target Date:** {target_date_str}")
                 o_name = st.selectbox("Personnel (Includes Write-Ins)", override_names_list, key="ov_n")
                 o_seat = st.selectbox("Assign to Seat", all_seats_list, key="ov_s")
                 
                 if st.form_submit_button("Lock Seat Override"):
                     conn = get_db_connection()
-                    conn.cursor().execute("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", (o_date_ov.strftime("%Y-%m-%d"), o_name, o_seat))
+                    c = conn.cursor()
+                    # Prevent duplicates by deleting existing entries for this seat or person first
+                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, o_seat))
+                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
+                    c.execute("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", (target_date_str, o_name, o_seat))
                     conn.commit()
                     conn.close()
                     st.success(f"Locked {o_name} into {o_seat}.")
