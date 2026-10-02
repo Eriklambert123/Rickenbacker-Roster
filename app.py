@@ -14,13 +14,11 @@ st.set_page_config(page_title="Rickenbacker Fire Department Management", layout=
 DB_URI = st.secrets["DB_URI"]
 ADMIN_PIN = st.secrets.get("ADMIN_PIN", "2026") # Defaults to 2026 if not set in secrets
 
-# Removed aggressive vertical block gap to let layout breathe naturally
+# Removed the restrictive popover button CSS that was suffocating/clipping the emojis
 st.markdown("""
 <style>
 [data-testid="column"] { padding: 0 0.3rem !important; }
 [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 0.5rem !important; }
-[data-testid="stPopover"] button { padding: 4px 8px !important; min-height: auto !important; }
-[data-testid="stPopover"] button p { font-size: 0.9rem !important; white-space: normal !important; line-height: 1.2 !important; }
 hr { margin: 0.8em 0 !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -470,6 +468,7 @@ for _, p in personnel_df.iterrows():
     if p['core_manning'] and p['name'] not in leaves_am and p['name'] not in trades_am_off: core_count += 1
 total_on_duty = len(am_crew) 
 
+all_on_duty = set([p["Name"] for p in am_crew] + [p["Name"] for p in pm_crew])
 excluded_watches = {am_roster["CH-222"]["AC"], pm_roster["CH-222"]["AC"], am_roster["E-221"]["Station Captain"], pm_roster["E-221"]["Station Captain"], am_roster["ARO"]["0700-1200 (Float)"], pm_roster["ARO"]["0700-1200 (Float)"]}
 eligible_aro_names = sorted([name for name in all_on_duty if name not in excluded_watches and name != ""])
 
@@ -532,12 +531,11 @@ with tab_roster:
                     continue
 
                 if is_admin:
-                    # Widened column ratio to [6, 1] to stop early text wrap next to popover buttons
-                    c1, c2 = st.columns([6, 1])
+                    c1, c2 = st.columns([5, 1])
                     c1.markdown(disp_text)
                     pop_icon = "🔒" if is_locked else "⚙️"
                     
-                    with c2.popover(pop_icon):
+                    with c2.popover(pop_icon, use_container_width=True):
                         options = ["-- Auto --"] + on_duty_dropdown_list
                         if is_locked and locked_by not in options:
                             options.append(locked_by)
