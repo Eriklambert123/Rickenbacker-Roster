@@ -14,10 +14,19 @@ st.set_page_config(page_title="Rickenbacker Fire Department Management", layout=
 DB_URI = st.secrets["DB_URI"]
 ADMIN_PIN = st.secrets.get("ADMIN_PIN", "2026") # Defaults to 2026 if not set in secrets
 
+# Added 'nowrap' and 'ellipsis' so calendar buttons stay on a single horizontal line
 st.markdown("""
 <style>
-[data-testid="column"] { padding: 0 0.3rem !important; }
-[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 0.5rem !important; }
+[data-testid="column"] { padding: 0 0.2rem !important; }
+[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 0.4rem !important; }
+[data-testid="stPopover"] button { padding: 4px 6px !important; min-height: auto !important; }
+[data-testid="stPopover"] button p { 
+    font-size: 0.82rem !important; 
+    white-space: nowrap !important; 
+    overflow: hidden !important; 
+    text-overflow: ellipsis !important; 
+    margin: 0 !important; 
+}
 hr { margin: 0.8em 0 !important; }
 </style>
 """, unsafe_allow_html=True)
