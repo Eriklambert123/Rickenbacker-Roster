@@ -14,7 +14,6 @@ st.set_page_config(page_title="Rickenbacker Fire Department Management", layout=
 DB_URI = st.secrets["DB_URI"]
 ADMIN_PIN = st.secrets.get("ADMIN_PIN", "2026") # Defaults to 2026 if not set in secrets
 
-# Removed the restrictive popover button CSS that was suffocating/clipping the emojis
 st.markdown("""
 <style>
 [data-testid="column"] { padding: 0 0.3rem !important; }
@@ -279,7 +278,6 @@ am_crew_dict = {p["Name"]: p for p in am_crew}
 pm_crew_dict = {p["Name"]: p for p in pm_crew}
 
 # ON-DUTY OVERRIDE LIST GENERATOR 
-# Automatically captures any OT/Trades and inherently excludes anyone on Leave
 all_on_duty = set([p["Name"] for p in am_crew] + [p["Name"] for p in pm_crew])
 on_duty_clean_names = set()
 for name in all_on_duty:
@@ -531,9 +529,12 @@ with tab_roster:
                     continue
 
                 if is_admin:
-                    c1, c2 = st.columns([5, 1])
+                    # Ratio gives button column enough width
+                    c1, c2 = st.columns([7, 2])
                     c1.markdown(disp_text)
-                    pop_icon = "🔒" if is_locked else "⚙️"
+                    
+                    # Added invisible spaces around emojis to force Windows to stop clipping the bounding box
+                    pop_icon = " 🔒 " if is_locked else " ⚙️ "
                     
                     with c2.popover(pop_icon, use_container_width=True):
                         options = ["-- Auto --"] + on_duty_dropdown_list
