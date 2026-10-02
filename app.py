@@ -14,11 +14,10 @@ st.set_page_config(page_title="Rickenbacker Fire Department Management", layout=
 DB_URI = st.secrets["DB_URI"]
 ADMIN_PIN = st.secrets.get("ADMIN_PIN", "2026") # Defaults to 2026 if not set in secrets
 
-# Added 'nowrap' and 'ellipsis' so calendar buttons stay on a single horizontal line
 st.markdown("""
 <style>
-[data-testid="column"] { padding: 0 0.2rem !important; }
-[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 0.4rem !important; }
+[data-testid="column"] { padding: 0 0.3rem !important; }
+[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 0.5rem !important; }
 [data-testid="stPopover"] button { padding: 4px 6px !important; min-height: auto !important; }
 [data-testid="stPopover"] button p { 
     font-size: 0.82rem !important; 
@@ -513,10 +512,9 @@ with tab_roster:
             for position in am_roster[rig_name]:
                 am_name, pm_name = am_roster[rig_name][position], pm_roster[rig_name][position]
                 
-                if rig_name == "ARO" and position == "0700-1200 (Float)":
-                    if am_name == "": am_name = "VACANT"
-                    if pm_name == "": pm_name = "VACANT"
-                elif am_name == "" and pm_name == "": continue
+                # Removed the code that skipped empty seats so they always show as VACANT
+                if am_name == "": am_name = "VACANT"
+                if pm_name == "": pm_name = "VACANT"
                 
                 # Format the text
                 if rig_name == "ARO" and position != "0700-1200 (Float)": 
@@ -610,6 +608,81 @@ with tab_roster:
         display_rig("Crash-8", "warning")
         
     st.divider()
+
+    # --- SHIFT FINALIZATION & LOCKING ---
+    if is_admin:
+        st.markdown("### 🛠️ Shift Finalization")
+        rm_col1, rm_col2 = st.columns(2)
+        
+        if rm_col1.button("🔒 Lock Entire Current Roster", use_container_width=True):
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s", (target_date_str,))
+            
+            inserts = []
+            seen_names = set()
+            for rig, seats in am_roster.items():
+                for pos, am_name in seats.items():
+                    seat_name = f"{rig} | {pos}"
+                    if seat_name in all_seats_list:
+                        if am_name and am_name != "VACANT":
+                            clean_name = am_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
+                            # Prevent cross-staffed duplication (e.g. locking someone to both E-221 and Crash-4)
+                            if clean_name not in seen_names:
+                                inserts.append((target_date_str, clean_name, seat_name))
+                                seen_names.add(clean_name)
+            
+            if inserts:
+                c.executemany("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", inserts)
+            conn.commit()
+            conn.close()
+            st.success("Roster successfully locked!")
+            time.sleep(1)
+            st.rerun()
+
+        if rm_col2.button("💾 Commit Today's Roster to History", type="primary", use_container_width=True):
+            records = []
+            for rig, seats in am_roster.items():
+                for pos, am_name in seats.items():
+                    pm_name = pm_roster[rig][pos]
+                    seat_name = f"{rig} {pos}"
+                    
+                    if rig == "ARO" and pos != "0700-1200 (Float)": continue
+                    if rig in ["Crash-4", "Crash-1"] and pos == "Crew Chief": continue 
+                    if rig == "Tanker": continue # Prevents double-logging hours for the cross-staffed Rescue crew
+                    
+                    if am_name and am_name == pm_name:
+                        clean_name = am_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
+                        if clean_name != "VACANT": records.append((target_date_str, clean_name, seat_name, 24.0))
+                    else:
+                        if am_name and am_name != "VACANT":
+                            clean_am = am_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
+                            records.append((target_date_str, clean_am, seat_name, 8.0))
+                        if pm_name and pm_name != "VACANT":
+                            clean_pm = pm_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
+                            records.append((target_date_str, clean_pm, seat_name, 16.0))
+            
+            am_float = am_roster["ARO"]["0700-1200 (Float)"]
+            if am_float and am_float != "VACANT":
+                clean_am = am_float.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
+                records.append((target_date_str, clean_am, "Watch: 0700-1200", 1.0))
+                
+            for wp in ["1200-1700", "1700-2200", "2200-0600", "0600-0700"]:
+                if wp in db_watches and db_watches[wp] not in ["", "--"]:
+                    clean_w = db_watches[wp].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
+                    records.append((target_date_str, clean_w, f"Watch: {wp}", 1.0))
+                            
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("DELETE FROM Position_Log WHERE Target_Date = %s", (target_date_str,))
+            c.executemany("INSERT INTO Position_Log (Target_Date, Name, Position, Hours) VALUES (%s, %s, %s, %s)", records)
+            conn.commit()
+            conn.close()
+            st.success("Roster successfully saved to history! The balancing engine has been updated.")
+            time.sleep(1)
+            st.rerun()
+            
+    st.divider()
     day_of_week = target_date.strftime("%A")
     st.subheader(f"🧹 Station Details ({day_of_week})")
     
@@ -660,49 +733,6 @@ with tab_roster:
     else:
         st.info(f"No specific station deep-cleaning details are officially assigned for {day_of_week}s.")
 
-    st.divider()
-    if is_admin:
-        if st.button("💾 Commit Today's Roster to History", type="primary", use_container_width=True):
-            records = []
-            for rig, seats in am_roster.items():
-                for pos, am_name in seats.items():
-                    pm_name = pm_roster[rig][pos]
-                    seat_name = f"{rig} {pos}"
-                    
-                    if rig == "ARO" and pos != "0700-1200 (Float)": continue
-                    if rig in ["Crash-4", "Crash-1"] and pos == "Crew Chief": continue 
-                    if rig == "Tanker": continue # Prevents double-logging hours for the cross-staffed Rescue crew
-                    
-                    if am_name and am_name == pm_name:
-                        clean_name = am_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
-                        if clean_name != "VACANT": records.append((target_date_str, clean_name, seat_name, 24.0))
-                    else:
-                        if am_name and am_name != "VACANT":
-                            clean_am = am_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
-                            records.append((target_date_str, clean_am, seat_name, 8.0))
-                        if pm_name and pm_name != "VACANT":
-                            clean_pm = pm_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
-                            records.append((target_date_str, clean_pm, seat_name, 16.0))
-            
-            am_float = am_roster["ARO"]["0700-1200 (Float)"]
-            if am_float and am_float != "VACANT":
-                clean_am = am_float.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
-                records.append((target_date_str, clean_am, "Watch: 0700-1200", 1.0))
-                
-            for wp in ["1200-1700", "1700-2200", "2200-0600", "0600-0700"]:
-                if wp in db_watches and db_watches[wp] not in ["", "--"]:
-                    clean_w = db_watches[wp].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
-                    records.append((target_date_str, clean_w, f"Watch: {wp}", 1.0))
-                            
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("DELETE FROM Position_Log WHERE Target_Date = %s", (target_date_str,))
-            c.executemany("INSERT INTO Position_Log (Target_Date, Name, Position, Hours) VALUES (%s, %s, %s, %s)", records)
-            conn.commit()
-            conn.close()
-            st.success("Roster successfully saved to history! The balancing engine has been updated.")
-            time.sleep(1)
-            st.rerun()
 
 # ==========================================
 # TAB 2: LEAVE CALENDAR
