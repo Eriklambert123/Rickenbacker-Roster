@@ -917,8 +917,9 @@ with tab_ot:
                 </html>
                 """
                 
+                st.markdown("*(Tip: When the file opens, set your printer destination to **'Save as PDF'** to create a digital copy.)*")
                 st.download_button(
-                    label="🖨️ Download Printable View",
+                    label="🖨️ Download Roster (Print / Save as PDF)",
                     data=html_content,
                     file_name=f"OT_Roster_{stamp}.html",
                     mime="text/html",
