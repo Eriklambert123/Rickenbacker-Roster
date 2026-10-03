@@ -33,7 +33,7 @@ hr { margin: 0.8em 0 !important; }
 def get_icon(entry_type):
     icons = {
         "Annual Leave": "🏖️", "Paternity Leave": "🍼", "Union Leave": "🤝", 
-        "Bereavement Leave": "🕊️️", "Medical Leave": "🏥", "Military Leave": "🪖", 
+        "Bereavement Leave": "🕊️", "Medical Leave": "🏥", "Military Leave": "🪖", 
         "Jury Duty": "⚖️", "NFPA Physical": "🩺", "Personal Leave": "👤", 
         "Disability Leave": "♿", "Voluntary": "💰", "Mandatory": "🚨", "Guard Personnel On-Duty": "🫡"
     }
@@ -822,7 +822,7 @@ with tab_ot:
 
     # --- ARCHIVES OUTSIDE ADMIN LOOP (PUBLIC VISIBILITY) ---
     st.divider()
-    st.subheader("🗄️ Callout Archives")
+    st.subheader("🗄️️ Callout Archives")
     conn = get_db_connection()
     archive_df = pd.read_sql("SELECT * FROM OT_Archive ORDER BY id DESC", conn)
     conn.close()
@@ -874,6 +874,54 @@ with tab_ot:
                 with c2:
                     st.markdown("**Updated List (After)**")
                     st.dataframe(right_df, use_container_width=True, hide_index=True, height=archive_height)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                # --- PRINTABLE HTML GENERATOR ---
+                styled_html = styled_left.hide(axis="index").to_html()
+                
+                html_content = f"""
+                <html>
+                <head>
+                <style>
+                    body {{ font-family: sans-serif; padding: 20px; }}
+                    h2 {{ text-align: center; margin-bottom: 5px; }}
+                    .header-notes {{ text-align: center; margin-bottom: 20px; font-style: italic; color: #555; }}
+                    .container {{ display: flex; justify-content: space-between; gap: 20px; }}
+                    .col {{ width: 48%; }}
+                    table {{ border-collapse: collapse; width: 100%; font-size: 14px; margin-top: 10px; }}
+                    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                    th {{ background-color: #f2f2f2 !important; color: black; }}
+                    @media print {{
+                        @page {{ size: landscape; margin: 0.5cm; }}
+                        button {{ display: none; }}
+                    }}
+                </style>
+                </head>
+                <body onload="window.print()">
+                    <h2>Overtime Roster Snapshot</h2>
+                    <div class="header-notes"><strong>Stamp:</strong> {stamp} <br> <strong>Notes:</strong> {stamp_notes}</div>
+                    <div class="container">
+                        <div class="col">
+                            <h3 style="text-align: center; margin: 0;">Canvass Roster (Before)</h3>
+                            {styled_html}
+                        </div>
+                        <div class="col">
+                            <h3 style="text-align: center; margin: 0;">Updated List (After)</h3>
+                            {right_df.to_html(index=False)}
+                        </div>
+                    </div>
+                </body>
+                </html>
+                """
+                
+                st.download_button(
+                    label="🖨️️ Download Printable View",
+                    data=html_content,
+                    file_name=f"OT_Roster_{stamp}.html",
+                    mime="text/html",
+                    key=f"print_{stamp}"
+                )
     else:
         st.info("No past callouts archived yet.")
 
@@ -1013,7 +1061,7 @@ if is_admin:
         
         with form_col1:
             with st.form("leave_form", clear_on_submit=True):
-                st.markdown("#### 🏖️️ Enter Leave")
+                st.markdown("#### 🏖️ Enter Leave")
                 l_date_range = st.date_input("Target Date(s)", value=(target_date, target_date))
                 l_name = st.selectbox("Personnel", all_names)
                 leave_types = sorted(["Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave", "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical", "Personal Leave", "Disability Leave"])
