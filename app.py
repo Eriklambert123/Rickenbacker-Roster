@@ -33,7 +33,7 @@ hr { margin: 0.8em 0 !important; }
 def get_icon(entry_type):
     icons = {
         "Annual Leave": "🏖️", "Paternity Leave": "🍼", "Union Leave": "🤝", 
-        "Bereavement Leave": "🕊️", "Medical Leave": "🏥", "Military Leave": "🪖", 
+        "Bereavement Leave": "🕊️️", "Medical Leave": "🏥", "Military Leave": "🪖", 
         "Jury Duty": "⚖️", "NFPA Physical": "🩺", "Personal Leave": "👤", 
         "Disability Leave": "♿", "Voluntary": "💰", "Mandatory": "🚨", "Guard Personnel On-Duty": "🫡"
     }
@@ -761,17 +761,27 @@ with tab_ot:
             height=grid_height
         )
 
-        ot_col1, ot_col2 = st.columns([1, 3])
-        with ot_col1:
-            callout_hours = st.number_input("Callout Hours (Applied to all checked)", value=24.0, min_value=0.5, max_value=48.0, step=0.5)
-        with ot_col2:
-            ot_notes = st.text_input("Callout Notes (Required)", placeholder="e.g., Shift coverage for C-Shift vacancy...")
+        st.markdown("##### Callout Details")
+        ot_c1, ot_c2, ot_c3, ot_c4, ot_c5 = st.columns([1.5, 1.5, 1, 1, 1])
+        with ot_c1:
+            callout_hours = st.number_input("Callout Hours", value=24.0, min_value=0.5, max_value=48.0, step=0.5)
+        with ot_c2:
+            ot_worked_date = st.date_input("Date to be Worked", value=target_date)
+        with ot_c3:
+            ot_shift = st.selectbox("Shift", ["A", "B", "C"])
+        with ot_c4:
+            ot_start = st.text_input("Start Time", "0700", key="ot_t_s")
+        with ot_c5:
+            ot_end = st.text_input("End Time", "0700", key="ot_t_e")
+            
+        ot_notes = st.text_input("Callout Notes (Required)", placeholder="e.g., Shift coverage for vacancy...")
         
         if st.button("Process & Commit Hours", type="primary"):
             if not ot_notes.strip():
                 st.error("Notes cannot be blank to process a callout.")
             else:
-                archive_stamp = f"{target_date_str}_{datetime.datetime.now().strftime('%H%M')}"
+                archive_stamp = f"{datetime.datetime.now().strftime('%Y-%m-%d_%H%M%S')}"
+                compiled_notes = f"[{ot_worked_date.strftime('%Y-%m-%d')} | {ot_shift}-Shift | {ot_start}-{ot_end}] {ot_notes}"
                 archive_records = []
                 
                 df_print = edited_df[edited_df['Contact'] == 'Yes'].copy()
@@ -785,7 +795,7 @@ with tab_ot:
                     elif is_charged: status = f"🟡 Charged"
                     else: status = "⚪ Skipped / Working"
                     
-                    archive_records.append((archive_stamp, ot_notes, r['Name'], r['Current_hours'], hours_applied, status))
+                    archive_records.append((archive_stamp, compiled_notes, r['Name'], r['Current_hours'], hours_applied, status))
                 
                 updates = []
                 for _, r in edited_df.iterrows():
@@ -1003,7 +1013,7 @@ if is_admin:
         
         with form_col1:
             with st.form("leave_form", clear_on_submit=True):
-                st.markdown("#### 🏖️ Enter Leave")
+                st.markdown("#### 🏖️️ Enter Leave")
                 l_date_range = st.date_input("Target Date(s)", value=(target_date, target_date))
                 l_name = st.selectbox("Personnel", all_names)
                 leave_types = sorted(["Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave", "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical", "Personal Leave", "Disability Leave"])
