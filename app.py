@@ -14,7 +14,6 @@ st.set_page_config(page_title="Rickenbacker Fire Department Management", layout=
 DB_URI = st.secrets["DB_URI"]
 ADMIN_PIN = st.secrets.get("ADMIN_PIN", "2026")
 
-# Updated CSS to allow long text to wrap cleanly to two lines and dynamically grow the button height
 st.markdown("""
 <style>
 [data-testid="column"] { padding: 0 0.3rem !important; }
@@ -981,7 +980,8 @@ with tab_calendar:
                     manning_color = "green" if est_manning >= 9 else "red"
                     
                     with st.container(border=True):
-                        st.markdown(f"<div style='background-color:{shift_color}; color:white; padding: 2px 4px; border-radius: 3px; font-size: 0.85em; margin-bottom: 4px; text-align: center;'><b>{day} | {shift_name}</b></div><div style='color:{manning_color}; font-size:0.9em; font-weight:bold; margin-bottom: 4px;'>Manning: {est_manning}</div>", unsafe_allow_html=True)
+                        # UPDATED CALENDAR DATE STYLING
+                        st.markdown(f"<div style='background-color:{shift_color}; color:white; padding: 6px 4px; border-radius: 4px; font-size: 1.25em; font-weight: 800; margin-bottom: 6px; text-align: center;'>{day} | {shift_name}</div><div style='color:{manning_color}; font-size:1.0em; font-weight:bold; margin-bottom: 4px; text-align: center;'>Manning: {est_manning}</div>", unsafe_allow_html=True)
                         
                         if not day_leave.empty:
                             for _, l in day_leave.iterrows():
@@ -1067,7 +1067,7 @@ if is_admin:
         
         with form_col1:
             with st.form("leave_form", clear_on_submit=True):
-                st.markdown("#### 🏖️️ Enter Leave")
+                st.markdown("#### 🏖️ Enter Leave")
                 l_date_range = st.date_input("Target Date(s)", value=(target_date, target_date))
                 l_name = st.selectbox("Personnel", all_names)
                 leave_types = sorted(["Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave", "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical", "Personal Leave", "Disability Leave"])
