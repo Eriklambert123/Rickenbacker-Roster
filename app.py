@@ -614,7 +614,7 @@ with tab_roster:
     st.divider()
 
     if is_admin:
-        st.markdown("### 🛠️️ Shift Finalization")
+        st.markdown("### 🛠️ Shift Finalization")
         rm_col1, rm_col2 = st.columns(2)
         
         if rm_col1.button("🔒 Lock Entire Current Roster", use_container_width=True):
@@ -828,6 +828,8 @@ with tab_ot:
             stamp_df = archive_df[archive_df['archive_stamp'] == stamp]
             stamp_notes = stamp_df['notes'].iloc[0]
             
+            archive_height = (len(stamp_df) * 35) + 40
+            
             with st.expander(f"Snapshot: {stamp} | Notes: {stamp_notes}"):
                 c1, c2 = st.columns(2)
                 
@@ -847,7 +849,7 @@ with tab_ot:
                 
                 with c1:
                     st.markdown("**Canvass Roster (Before)**")
-                    st.dataframe(styled_left, use_container_width=True, hide_index=True)
+                    st.dataframe(styled_left, use_container_width=True, hide_index=True, height=archive_height)
                 
                 # --- RIGHT SIDE: Updated List (After) ---
                 right_df = stamp_df[['name', 'new_hours']].copy()
@@ -858,7 +860,7 @@ with tab_ot:
                 
                 with c2:
                     st.markdown("**Updated List (After)**")
-                    st.dataframe(right_df, use_container_width=True, hide_index=True)
+                    st.dataframe(right_df, use_container_width=True, hide_index=True, height=archive_height)
     else:
         st.info("No past callouts archived yet.")
 
@@ -998,7 +1000,7 @@ if is_admin:
         
         with form_col1:
             with st.form("leave_form", clear_on_submit=True):
-                st.markdown("#### 🏖️️ Enter Leave")
+                st.markdown("#### 🏖️ Enter Leave")
                 l_date_range = st.date_input("Target Date(s)", value=(target_date, target_date))
                 l_name = st.selectbox("Personnel", all_names)
                 leave_types = sorted(["Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave", "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical", "Personal Leave", "Disability Leave"])
