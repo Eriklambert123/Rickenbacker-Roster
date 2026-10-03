@@ -837,6 +837,9 @@ with tab_ot:
                 left_df = stamp_df[['name', 'start_hours', 'hours_applied', 'status']].copy()
                 left_df.rename(columns={'name': 'Name', 'start_hours': 'Old Hours', 'hours_applied': 'Hours', 'status': 'Action'}, inplace=True)
                 
+                # Explicitly sort the left side by Old Hours to maintain perfect Canvass order
+                left_df = left_df.sort_values(by='Old Hours', ascending=True).reset_index(drop=True)
+                
                 # Apply Pandas Styling to recreate the Excel colors
                 def color_rows(row):
                     if 'Awarded' in row['Action']:
@@ -856,7 +859,7 @@ with tab_ot:
                 right_df.rename(columns={'name': 'Name', 'new_hours': 'New Hours'}, inplace=True)
                 
                 # Re-sort the right side by New Hours, just like the Excel macro
-                right_df = right_df.sort_values(by='New Hours').reset_index(drop=True)
+                right_df = right_df.sort_values(by='New Hours', ascending=True).reset_index(drop=True)
                 
                 with c2:
                     st.markdown("**Updated List (After)**")
