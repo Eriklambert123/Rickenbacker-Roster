@@ -614,7 +614,7 @@ with tab_roster:
     st.divider()
 
     if is_admin:
-        st.markdown("### 🛠️ Shift Finalization")
+        st.markdown("### 🛠️️ Shift Finalization")
         rm_col1, rm_col2 = st.columns(2)
         
         if rm_col1.button("🔒 Lock Entire Current Roster", use_container_width=True):
@@ -760,19 +760,6 @@ with tab_ot:
             hide_index=True,
             height=grid_height
         )
-        
-        # --- LIVE CALLOUT PREVIEW ---
-        awarded_names = edited_df[edited_df['Awarded'] == True]['Name'].tolist()
-        charged_names = edited_df[edited_df['Charged'] == True]['Name'].tolist()
-        
-        if awarded_names or charged_names:
-            st.markdown("##### 🚦 Live Callout Preview")
-            prev_col1, prev_col2 = st.columns(2)
-            with prev_col1:
-                for n in awarded_names: st.success(f"🟢 **{n}** ➡️ Awarded")
-            with prev_col2:
-                for n in charged_names: st.warning(f"🟡 **{n}** ➡️ Charged")
-            st.markdown("<br>", unsafe_allow_html=True)
 
         ot_col1, ot_col2 = st.columns([1, 3])
         with ot_col1:
@@ -794,8 +781,8 @@ with tab_ot:
                     
                     hours_applied = callout_hours if (is_awarded or is_charged) else 0.0
                     
-                    if is_awarded: status = f"🟢 Awarded ({callout_hours}h)"
-                    elif is_charged: status = f"🟡 Charged ({callout_hours}h)"
+                    if is_awarded: status = f"🟢 Awarded"
+                    elif is_charged: status = f"🟡 Charged"
                     else: status = "⚪ Skipped / Working"
                     
                     archive_records.append((archive_stamp, ot_notes, r['Name'], r['Current_hours'], hours_applied, status))
@@ -832,20 +819,46 @@ with tab_ot:
     
     if not archive_df.empty:
         archive_df.columns = [c.lower() for c in archive_df.columns]
+        
+        # Calculate new hours on the fly for the archive display
+        archive_df['new_hours'] = archive_df['start_hours'] + archive_df['hours_applied']
+        
         archive_groups = archive_df['archive_stamp'].unique()
         for stamp in archive_groups[:10]:
             stamp_df = archive_df[archive_df['archive_stamp'] == stamp]
             stamp_notes = stamp_df['notes'].iloc[0]
             
-            archive_height = (len(stamp_df) * 35) + 40
-            
             with st.expander(f"Snapshot: {stamp} | Notes: {stamp_notes}"):
-                st.dataframe(
-                    stamp_df[['name', 'start_hours', 'hours_applied', 'status']], 
-                    use_container_width=True, 
-                    hide_index=True,
-                    height=archive_height
-                )
+                c1, c2 = st.columns(2)
+                
+                # --- LEFT SIDE: Canvass Roster (Before) ---
+                left_df = stamp_df[['name', 'start_hours', 'hours_applied', 'status']].copy()
+                left_df.rename(columns={'name': 'Name', 'start_hours': 'Old Hours', 'hours_applied': 'Hours', 'status': 'Action'}, inplace=True)
+                
+                # Apply Pandas Styling to recreate the Excel colors
+                def color_rows(row):
+                    if 'Awarded' in row['Action']:
+                        return ['background-color: #c8e6c9; color: black'] * len(row) # Excel Green
+                    if 'Charged' in row['Action']:
+                        return ['background-color: #fff9c4; color: black'] * len(row) # Excel Yellow
+                    return [''] * len(row)
+                
+                styled_left = left_df.style.apply(color_rows, axis=1)
+                
+                with c1:
+                    st.markdown("**Canvass Roster (Before)**")
+                    st.dataframe(styled_left, use_container_width=True, hide_index=True)
+                
+                # --- RIGHT SIDE: Updated List (After) ---
+                right_df = stamp_df[['name', 'new_hours']].copy()
+                right_df.rename(columns={'name': 'Name', 'new_hours': 'New Hours'}, inplace=True)
+                
+                # Re-sort the right side by New Hours, just like the Excel macro
+                right_df = right_df.sort_values(by='New Hours').reset_index(drop=True)
+                
+                with c2:
+                    st.markdown("**Updated List (After)**")
+                    st.dataframe(right_df, use_container_width=True, hide_index=True)
     else:
         st.info("No past callouts archived yet.")
 
@@ -985,7 +998,7 @@ if is_admin:
         
         with form_col1:
             with st.form("leave_form", clear_on_submit=True):
-                st.markdown("#### 🏖️ Enter Leave")
+                st.markdown("#### 🏖️️ Enter Leave")
                 l_date_range = st.date_input("Target Date(s)", value=(target_date, target_date))
                 l_name = st.selectbox("Personnel", all_names)
                 leave_types = sorted(["Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave", "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical", "Personal Leave", "Disability Leave"])
