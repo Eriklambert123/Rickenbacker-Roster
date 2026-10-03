@@ -822,7 +822,7 @@ with tab_ot:
 
     # --- ARCHIVES OUTSIDE ADMIN LOOP (PUBLIC VISIBILITY) ---
     st.divider()
-    st.subheader("🗄️️ Callout Archives")
+    st.subheader("🗄️ Callout Archives")
     conn = get_db_connection()
     archive_df = pd.read_sql("SELECT * FROM OT_Archive ORDER BY id DESC", conn)
     conn.close()
@@ -885,15 +885,17 @@ with tab_ot:
                 <head>
                 <style>
                     body {{ font-family: sans-serif; padding: 20px; }}
-                    h2 {{ text-align: center; margin-bottom: 5px; }}
-                    .header-notes {{ text-align: center; margin-bottom: 20px; font-style: italic; color: #555; }}
-                    .container {{ display: flex; justify-content: space-between; gap: 20px; }}
-                    .col {{ width: 48%; }}
-                    table {{ border-collapse: collapse; width: 100%; font-size: 14px; margin-top: 10px; }}
-                    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                    h2 {{ text-align: center; margin-bottom: 5px; font-size: 18px; }}
+                    h3 {{ text-align: center; margin: 0; font-size: 14px; }}
+                    .header-notes {{ text-align: center; margin-bottom: 15px; font-style: italic; color: #555; font-size: 12px; }}
+                    .container {{ display: flex; justify-content: space-between; gap: 10px; width: 100%; }}
+                    .col {{ width: 49%; }}
+                    table {{ border-collapse: collapse; width: 100%; font-size: 11px; margin-top: 10px; }}
+                    th, td {{ border: 1px solid #ddd; padding: 4px 6px; text-align: left; }}
                     th {{ background-color: #f2f2f2 !important; color: black; }}
                     @media print {{
-                        @page {{ size: landscape; margin: 0.5cm; }}
+                        @page {{ size: portrait; margin: 0.4in; }}
+                        body {{ padding: 0; }}
                         button {{ display: none; }}
                     }}
                 </style>
@@ -903,11 +905,11 @@ with tab_ot:
                     <div class="header-notes"><strong>Stamp:</strong> {stamp} <br> <strong>Notes:</strong> {stamp_notes}</div>
                     <div class="container">
                         <div class="col">
-                            <h3 style="text-align: center; margin: 0;">Canvass Roster (Before)</h3>
+                            <h3>Canvass Roster (Before)</h3>
                             {styled_html}
                         </div>
                         <div class="col">
-                            <h3 style="text-align: center; margin: 0;">Updated List (After)</h3>
+                            <h3>Updated List (After)</h3>
                             {right_df.to_html(index=False)}
                         </div>
                     </div>
@@ -916,7 +918,7 @@ with tab_ot:
                 """
                 
                 st.download_button(
-                    label="🖨️️ Download Printable View",
+                    label="🖨️ Download Printable View",
                     data=html_content,
                     file_name=f"OT_Roster_{stamp}.html",
                     mime="text/html",
