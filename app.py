@@ -971,7 +971,7 @@ with tab_calendar:
                     core_trading_off = len([n for n in full_day_trade_offs if n in core_names])
                     est_manning = len(core_names) - core_on_leave - core_trading_off + len(day_ot) + len(day_trades)
                     
-                    if est_manning < 9:
+                    if est_manning < 9 and current_date.weekday() < 5:
                         admin_names_list = all_personnel_df[all_personnel_df['shift'] == 'ADMIN']['name'].tolist()
                         admins_on_leave = len([n for n in full_day_leaves if n in admin_names_list]) + len([n for n in full_day_trade_offs if n in admin_names_list])
                         available_admins = len(admin_names_list) - admins_on_leave
@@ -980,7 +980,6 @@ with tab_calendar:
                     manning_color = "green" if est_manning >= 9 else "red"
                     
                     with st.container(border=True):
-                        # UPDATED CALENDAR DATE STYLING
                         st.markdown(f"<div style='background-color:{shift_color}; color:white; padding: 6px 4px; border-radius: 4px; font-size: 1.25em; font-weight: 800; margin-bottom: 6px; text-align: center;'>{day} | {shift_name}</div><div style='color:{manning_color}; font-size:1.0em; font-weight:bold; margin-bottom: 4px; text-align: center;'>Manning: {est_manning}</div>", unsafe_allow_html=True)
                         
                         if not day_leave.empty:
