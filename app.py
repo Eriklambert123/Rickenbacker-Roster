@@ -1039,16 +1039,19 @@ with tab_stats:
     if not stats_df.empty:
         pivot_df = stats_df.pivot(index='name', columns='position', values='total_hours').fillna(0)
         
+        # Dynamic height calculation to remove inner scrollbars
+        stats_height = (len(pivot_df) * 35) + 40
+        
         st.markdown("#### 🕒 Structural Seat Balance (Total Hours)")
         display_cols = [c for c in ["E-221 Driver/Operator", "E-221 Firefighter 1", "E-221 Firefighter 2", "R-221 Driver/Operator", "R-221 Firefighter 1", "ARO 0700-1200 (Float)"] if c in pivot_df.columns]
-        st.dataframe(pivot_df[display_cols], use_container_width=True)
+        st.dataframe(pivot_df[display_cols], use_container_width=True, height=stats_height)
         
         st.divider()
         
         st.markdown("#### 👁️ Alarm Room Watches (Total Count)")
         watch_cols = [c for c in ["Watch: 0700-1200", "Watch: 1200-1700", "Watch: 1700-2200", "Watch: 2200-0600", "Watch: 0600-0700"] if c in pivot_df.columns]
         if watch_cols:
-            st.dataframe(pivot_df[watch_cols].astype(int), use_container_width=True)
+            st.dataframe(pivot_df[watch_cols].astype(int), use_container_width=True, height=stats_height)
         else:
             st.info("No watches logged to history yet.")
     else:
