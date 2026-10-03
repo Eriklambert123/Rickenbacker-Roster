@@ -744,7 +744,7 @@ with tab_ot:
         st.dataframe(df_ot[['Seniority', 'Name', 'Shift', 'Current_hours', 'Contact']], use_container_width=True, hide_index=True, height=grid_height)
     else:
         st.markdown("### Process New Callout")
-        st.markdown("Use the grid below to check the boxes for personnel who were charged or awarded. Set the total callout hours below the grid.")
+        st.markdown("Use the grid below to check the boxes for personnel who were charged or awarded. The system will automatically catch typos and prevent double-dipping.")
         
         df_ot['Charged'] = False
         df_ot['Awarded'] = False
@@ -761,6 +761,19 @@ with tab_ot:
             height=grid_height
         )
         
+        # --- LIVE CALLOUT PREVIEW ---
+        awarded_names = edited_df[edited_df['Awarded'] == True]['Name'].tolist()
+        charged_names = edited_df[edited_df['Charged'] == True]['Name'].tolist()
+        
+        if awarded_names or charged_names:
+            st.markdown("##### 🚦 Live Callout Preview")
+            prev_col1, prev_col2 = st.columns(2)
+            with prev_col1:
+                for n in awarded_names: st.success(f"🟢 **{n}** ➡️ Awarded")
+            with prev_col2:
+                for n in charged_names: st.warning(f"🟡 **{n}** ➡️ Charged")
+            st.markdown("<br>", unsafe_allow_html=True)
+
         ot_col1, ot_col2 = st.columns([1, 3])
         with ot_col1:
             callout_hours = st.number_input("Callout Hours (Applied to all checked)", value=24.0, min_value=0.5, max_value=48.0, step=0.5)
@@ -1106,7 +1119,7 @@ if is_admin:
                     with st.container(border=True):
                         cols = st.columns([4, 1])
                         cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']}")
-                        if cols[1].button("🗑️️", key=f"del_ov_{ov['id']}", use_container_width=True):
+                        if cols[1].button("🗑️", key=f"del_ov_{ov['id']}", use_container_width=True):
                             conn = get_db_connection()
                             conn.cursor().execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
                             conn.commit()
