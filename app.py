@@ -34,7 +34,7 @@ def get_icon(entry_type):
         "Annual Leave": "🏖️", "Paternity Leave": "🍼", "Union Leave": "🤝", 
         "Bereavement Leave": "🕊️", "Medical Leave": "🏥", "Military Leave": "🪖", 
         "Jury Duty": "⚖️", "NFPA Physical": "🩺", "Personal Leave": "👤", 
-        "Disability Leave": "♿", "Voluntary": "💰", "Mandatory": "🚨", "Guard Personnel On-Duty": "🫡"
+        "Disability Leave": "♿", "Training": "📚", "Voluntary": "💰", "Mandatory": "🚨", "Guard Personnel On-Duty": "🫡"
     }
     return icons.get(entry_type, "📌")
 
@@ -1069,7 +1069,7 @@ if is_admin:
                 st.markdown("#### 🏖️ Enter Leave")
                 l_date_range = st.date_input("Target Date(s)", value=(target_date, target_date))
                 l_name = st.selectbox("Personnel", all_names)
-                leave_types = sorted(["Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave", "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical", "Personal Leave", "Disability Leave"])
+                leave_types = sorted(["Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave", "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical", "Personal Leave", "Disability Leave", "Training"])
                 l_type = st.selectbox("Leave Type", leave_types)
                 l_24h = st.checkbox("Full 24h Shift (0700-0700)", value=True, key="l_24")
                 time_col1, time_col2 = st.columns(2)
