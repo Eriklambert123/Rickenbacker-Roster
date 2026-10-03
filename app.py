@@ -14,16 +14,16 @@ st.set_page_config(page_title="Rickenbacker Fire Department Management", layout=
 DB_URI = st.secrets["DB_URI"]
 ADMIN_PIN = st.secrets.get("ADMIN_PIN", "2026")
 
+# Updated CSS to allow long text to wrap cleanly to two lines and dynamically grow the button height
 st.markdown("""
 <style>
 [data-testid="column"] { padding: 0 0.3rem !important; }
 [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 0.5rem !important; }
-[data-testid="stPopover"] button { padding: 4px 6px !important; min-height: auto !important; }
+[data-testid="stPopover"] button { padding: 4px 6px !important; min-height: auto !important; height: auto !important; }
 [data-testid="stPopover"] button p { 
     font-size: 0.82rem !important; 
-    white-space: nowrap !important; 
-    overflow: hidden !important; 
-    text-overflow: ellipsis !important; 
+    white-space: normal !important; 
+    line-height: 1.2 !important; 
     margin: 0 !important; 
 }
 hr { margin: 0.8em 0 !important; }
@@ -1067,7 +1067,7 @@ if is_admin:
         
         with form_col1:
             with st.form("leave_form", clear_on_submit=True):
-                st.markdown("#### 🏖️ Enter Leave")
+                st.markdown("#### 🏖️️ Enter Leave")
                 l_date_range = st.date_input("Target Date(s)", value=(target_date, target_date))
                 l_name = st.selectbox("Personnel", all_names)
                 leave_types = sorted(["Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave", "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical", "Personal Leave", "Disability Leave"])
