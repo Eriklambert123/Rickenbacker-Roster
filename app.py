@@ -737,9 +737,12 @@ with tab_ot:
     df_ot.columns = [c.capitalize() for c in df_ot.columns]
     df_ot = df_ot.sort_values(by=['Contact', 'Current_hours', 'Seniority'], ascending=[True, True, True]).reset_index(drop=True)
     
+    # Calculate a dynamic height so the box stretches to fit all names perfectly without scrolling
+    grid_height = (len(df_ot) * 35) + 40 
+    
     if not is_admin:
         st.markdown("*(Read-Only View. Enter Admin PIN to process callouts.)*")
-        st.dataframe(df_ot[['Seniority', 'Name', 'Shift', 'Current_hours', 'Contact']], use_container_width=True, hide_index=True)
+        st.dataframe(df_ot[['Seniority', 'Name', 'Shift', 'Current_hours', 'Contact']], use_container_width=True, hide_index=True, height=grid_height)
     else:
         st.markdown("### Process New Callout")
         st.markdown("Use the grid below to mark hours. The system will automatically catch typos and prevent double-dipping.")
@@ -755,7 +758,8 @@ with tab_ot:
             },
             disabled=["Seniority", "Name", "Shift", "Current_hours", "Contact"],
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
+            height=grid_height
         )
         
         ot_notes = st.text_input("Callout Notes (Required)", placeholder="e.g., Shift coverage for C-Shift vacancy...")
