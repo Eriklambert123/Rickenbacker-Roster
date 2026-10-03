@@ -744,16 +744,16 @@ with tab_ot:
         st.dataframe(df_ot[['Seniority', 'Name', 'Shift', 'Current_hours', 'Contact']], use_container_width=True, hide_index=True, height=grid_height)
     else:
         st.markdown("### Process New Callout")
-        st.markdown("Use the grid below to mark hours. The system will automatically catch typos and prevent double-dipping.")
+        st.markdown("Use the grid below to check the boxes for personnel who were charged or awarded. Set the total callout hours below the grid.")
         
-        df_ot['Charged'] = 0.0
-        df_ot['Awarded'] = 0.0
+        df_ot['Charged'] = False
+        df_ot['Awarded'] = False
         
         edited_df = st.data_editor(
             df_ot,
             column_config={
-                "Charged": st.column_config.NumberColumn("Charged", min_value=0.0, max_value=48.0, step=0.5),
-                "Awarded": st.column_config.NumberColumn("Awarded", min_value=0.0, max_value=48.0, step=0.5),
+                "Charged": st.column_config.CheckboxColumn("Charged"),
+                "Awarded": st.column_config.CheckboxColumn("Awarded"),
             },
             disabled=["Seniority", "Name", "Shift", "Current_hours", "Contact"],
             use_container_width=True,
@@ -761,70 +761,80 @@ with tab_ot:
             height=grid_height
         )
         
-        ot_notes = st.text_input("Callout Notes (Required)", placeholder="e.g., Shift coverage for C-Shift vacancy...")
+        ot_col1, ot_col2 = st.columns([1, 3])
+        with ot_col1:
+            callout_hours = st.number_input("Callout Hours (Applied to all checked)", value=24.0, min_value=0.5, max_value=48.0, step=0.5)
+        with ot_col2:
+            ot_notes = st.text_input("Callout Notes (Required)", placeholder="e.g., Shift coverage for C-Shift vacancy...")
         
         if st.button("Process & Commit Hours", type="primary"):
             if not ot_notes.strip():
                 st.error("Notes cannot be blank to process a callout.")
             else:
-                actual_shift_hours = edited_df['Awarded'].max()
-                if actual_shift_hours > 0:
-                    edited_df.loc[(edited_df['Contact'] == 'Yes') & (edited_df['Charged'] > 0), 'Charged'] = actual_shift_hours
-                    
-                edited_df['Hours_Applied'] = edited_df[['Charged', 'Awarded']].max(axis=1)
-                
-                df_print = edited_df[edited_df['Contact'] == 'Yes'].copy()
-                def get_status(row):
-                    if row['Awarded'] > 0: return f"🟢 Awarded ({row['Awarded']}h)"
-                    elif row['Charged'] > 0: return f"🟡 Charged ({row['Charged']}h)"
-                    else: return "⚪ Skipped / Working"
-                df_print['Status'] = df_print.apply(get_status, axis=1)
-                
                 archive_stamp = f"{target_date_str}_{datetime.datetime.now().strftime('%H%M')}"
                 archive_records = []
+                
+                df_print = edited_df[edited_df['Contact'] == 'Yes'].copy()
                 for _, r in df_print.iterrows():
-                    archive_records.append((archive_stamp, ot_notes, r['Name'], r['Current_hours'], r['Hours_Applied'], r['Status']))
+                    is_awarded = r['Awarded']
+                    is_charged = r['Charged']
+                    
+                    hours_applied = callout_hours if (is_awarded or is_charged) else 0.0
+                    
+                    if is_awarded: status = f"🟢 Awarded ({callout_hours}h)"
+                    elif is_charged: status = f"🟡 Charged ({callout_hours}h)"
+                    else: status = "⚪ Skipped / Working"
+                    
+                    archive_records.append((archive_stamp, ot_notes, r['Name'], r['Current_hours'], hours_applied, status))
                 
                 updates = []
                 for _, r in edited_df.iterrows():
-                    new_hours = r['Current_hours'] + r['Hours_Applied']
-                    updates.append((new_hours, r['Name']))
+                    is_awarded = r['Awarded']
+                    is_charged = r['Charged']
+                    
+                    hours_applied = callout_hours if (is_awarded or is_charged) else 0.0
+                    
+                    if hours_applied > 0:
+                        new_hours = r['Current_hours'] + hours_applied
+                        updates.append((new_hours, r['Name']))
                     
                 conn = get_db_connection()
                 c = conn.cursor()
-                c.executemany("INSERT INTO OT_Archive (Archive_Stamp, Notes, Name, Start_Hours, Hours_Applied, Status) VALUES (%s, %s, %s, %s, %s, %s)", archive_records)
-                c.executemany("UPDATE Overtime_Buckets SET Current_Hours = %s WHERE Name = %s", updates)
+                if archive_records:
+                    c.executemany("INSERT INTO OT_Archive (Archive_Stamp, Notes, Name, Start_Hours, Hours_Applied, Status) VALUES (%s, %s, %s, %s, %s, %s)", archive_records)
+                if updates:
+                    c.executemany("UPDATE Overtime_Buckets SET Current_Hours = %s WHERE Name = %s", updates)
                 conn.commit()
                 conn.close()
                 st.success(f"Callout successfully processed! Snapshot saved as {archive_stamp}.")
                 time.sleep(2)
                 st.rerun()
-                
-        st.divider()
-        st.subheader("🗄️ Callout Archives")
-        conn = get_db_connection()
-        archive_df = pd.read_sql("SELECT * FROM OT_Archive ORDER BY id DESC", conn)
-        conn.close()
-        
-        if not archive_df.empty:
-            archive_df.columns = [c.lower() for c in archive_df.columns]
-            archive_groups = archive_df['archive_stamp'].unique()
-            for stamp in archive_groups[:10]:
-                stamp_df = archive_df[archive_df['archive_stamp'] == stamp]
-                stamp_notes = stamp_df['notes'].iloc[0]
-                
-                # Dynamic height for the archive dataframe to prevent scrolling
-                archive_height = (len(stamp_df) * 35) + 40
-                
-                with st.expander(f"Snapshot: {stamp} | Notes: {stamp_notes}"):
-                    st.dataframe(
-                        stamp_df[['name', 'start_hours', 'hours_applied', 'status']], 
-                        use_container_width=True, 
-                        hide_index=True,
-                        height=archive_height
-                    )
-        else:
-            st.info("No past callouts archived yet.")
+
+    # --- ARCHIVES OUTSIDE ADMIN LOOP (PUBLIC VISIBILITY) ---
+    st.divider()
+    st.subheader("🗄️ Callout Archives")
+    conn = get_db_connection()
+    archive_df = pd.read_sql("SELECT * FROM OT_Archive ORDER BY id DESC", conn)
+    conn.close()
+    
+    if not archive_df.empty:
+        archive_df.columns = [c.lower() for c in archive_df.columns]
+        archive_groups = archive_df['archive_stamp'].unique()
+        for stamp in archive_groups[:10]:
+            stamp_df = archive_df[archive_df['archive_stamp'] == stamp]
+            stamp_notes = stamp_df['notes'].iloc[0]
+            
+            archive_height = (len(stamp_df) * 35) + 40
+            
+            with st.expander(f"Snapshot: {stamp} | Notes: {stamp_notes}"):
+                st.dataframe(
+                    stamp_df[['name', 'start_hours', 'hours_applied', 'status']], 
+                    use_container_width=True, 
+                    hide_index=True,
+                    height=archive_height
+                )
+    else:
+        st.info("No past callouts archived yet.")
 
 
 # ==========================================
@@ -1096,7 +1106,7 @@ if is_admin:
                     with st.container(border=True):
                         cols = st.columns([4, 1])
                         cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']}")
-                        if cols[1].button("🗑️", key=f"del_ov_{ov['id']}", use_container_width=True):
+                        if cols[1].button("🗑️️", key=f"del_ov_{ov['id']}", use_container_width=True):
                             conn = get_db_connection()
                             conn.cursor().execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
                             conn.commit()
