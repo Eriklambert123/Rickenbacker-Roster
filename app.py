@@ -737,7 +737,6 @@ with tab_ot:
     df_ot.columns = [c.capitalize() for c in df_ot.columns]
     df_ot = df_ot.sort_values(by=['Contact', 'Current_hours', 'Seniority'], ascending=[True, True, True]).reset_index(drop=True)
     
-    # Calculate a dynamic height so the box stretches to fit all names perfectly without scrolling
     grid_height = (len(df_ot) * 35) + 40 
     
     if not is_admin:
@@ -813,8 +812,17 @@ with tab_ot:
             for stamp in archive_groups[:10]:
                 stamp_df = archive_df[archive_df['archive_stamp'] == stamp]
                 stamp_notes = stamp_df['notes'].iloc[0]
+                
+                # Dynamic height for the archive dataframe to prevent scrolling
+                archive_height = (len(stamp_df) * 35) + 40
+                
                 with st.expander(f"Snapshot: {stamp} | Notes: {stamp_notes}"):
-                    st.dataframe(stamp_df[['name', 'start_hours', 'hours_applied', 'status']], use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        stamp_df[['name', 'start_hours', 'hours_applied', 'status']], 
+                        use_container_width=True, 
+                        hide_index=True,
+                        height=archive_height
+                    )
         else:
             st.info("No past callouts archived yet.")
 
