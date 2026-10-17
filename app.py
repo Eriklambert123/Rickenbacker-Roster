@@ -110,6 +110,7 @@ nav_options = [
     "📋 Daily Roster", 
     "⏱️ Overtime Roster", 
     "📅 Leave Calendar", 
+    "📆 Training & Events",
     "📊 Seat Statistics"
 ]
 if is_admin: 
@@ -133,6 +134,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS Manual_Overrides (id SERIAL PRIMARY KEY,
 c.execute('''CREATE TABLE IF NOT EXISTS Personnel (Name TEXT, Seniority INTEGER, Core_Manning BOOLEAN, Schedule TEXT, Shift TEXT)''')
 c.execute('''CREATE TABLE IF NOT EXISTS Leave_Ledger (id SERIAL PRIMARY KEY, Target_Date TEXT, Name TEXT, Leave_Type TEXT, Start_Time TEXT, End_Time TEXT, Total_Hours REAL)''')
 c.execute('''CREATE TABLE IF NOT EXISTS Overtime_Log (id SERIAL PRIMARY KEY, Target_Date TEXT, Name TEXT, OT_Type TEXT, Start_Time TEXT, End_Time TEXT, Total_Hours REAL)''')
+c.execute('''CREATE TABLE IF NOT EXISTS Station_Events (id SERIAL PRIMARY KEY, Target_Date TEXT, Event_Type TEXT, Description TEXT, Start_Time TEXT, End_Time TEXT)''')
 
 # Create Overtime Bucket & Archive Tables
 c.execute('''CREATE TABLE IF NOT EXISTS Overtime_Buckets (Name TEXT PRIMARY KEY, Seniority INTEGER, Shift TEXT, Current_Hours REAL, Contact TEXT)''')
@@ -214,6 +216,12 @@ if not stats_df.empty:
     stats_df.columns = [c.lower() for c in stats_df.columns]
 else: 
     stats_df = pd.DataFrame(columns=["name", "position", "total_hours"])
+
+events_df = pd.read_sql("SELECT * FROM Station_Events", conn)
+if not events_df.empty: 
+    events_df.columns = [c.lower() for c in events_df.columns]
+else: 
+    events_df = pd.DataFrame(columns=["id", "target_date", "event_type", "description", "start_time", "end_time"])
 
 conn.close()
 
@@ -1170,7 +1178,60 @@ elif selected_page == "📅 Leave Calendar":
                     st.write("")
 
 # ==========================================
-# PAGE 4: SEAT STATISTICS
+# PAGE 4: TRAINING & EVENTS CALENDAR
+# ==========================================
+elif selected_page == "📆 Training & Events":
+    cal_col1, cal_col2, _ = st.columns([1, 1, 4])
+    with cal_col1: 
+        selected_month = st.selectbox("Month", range(1, 13), index=target_date.month - 1, format_func=lambda x: calendar.month_name[x], key="ev_month")
+    with cal_col2: 
+        selected_year = st.selectbox("Year", [2025, 2026, 2027], index=1, key="ev_year")
+    st.divider()
+    cal_matrix = calendar.monthcalendar(selected_year, selected_month)
+    days_of_week = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    header_cols = st.columns(7)
+    for i, day_name in enumerate(days_of_week): 
+        header_cols[i].markdown(f"<h5 style='text-align: center;'>{day_name}</h5>", unsafe_allow_html=True)
+    
+    for week in cal_matrix:
+        week_cols = st.columns(7)
+        for i, day in enumerate(week):
+            with week_cols[i]:
+                if day != 0:
+                    current_date = datetime.date(selected_year, selected_month, day)
+                    date_str = current_date.strftime("%Y-%m-%d")
+                    cal_shift_mod = (current_date - anchor_date).days % 3
+                    if cal_shift_mod == 0: 
+                        shift_color, shift_name = "#4CAF50", "A-Shift"
+                    elif cal_shift_mod == 1: 
+                        shift_color, shift_name = "#2196F3", "B-Shift"
+                    else: 
+                        shift_color, shift_name = "#F44336", "C-Shift"
+
+                    day_events = events_df[events_df['target_date'] == date_str] if not events_df.empty else pd.DataFrame()
+                    
+                    with st.container(border=True):
+                        st.markdown(f"<div style='background-color:{shift_color}; color:white; padding: 6px 4px; border-radius: 4px; font-size: 1.25em; font-weight: 800; margin-bottom: 6px; text-align: center;'>{day} | {shift_name}</div>", unsafe_allow_html=True)
+                        
+                        if not day_events.empty:
+                            for _, ev in day_events.iterrows():
+                                icon = "📚" if ev['event_type'] == "Training" else "📅"
+                                with st.popover(f"{icon} {ev['description']}", use_container_width=True):
+                                    st.markdown(f"**{ev['event_type']}**")
+                                    st.write(f"⏱️ {ev['start_time']} - {ev['end_time']}")
+                                    st.write(f"📝 {ev['description']}")
+                                    if is_admin:
+                                        if st.button("🗑️ Cancel Event", key=f"del_ev_cal_{ev['id']}", type="primary", use_container_width=True):
+                                            conn = get_db_connection()
+                                            conn.cursor().execute("DELETE FROM Station_Events WHERE id = %s", (ev['id'],))
+                                            conn.commit()
+                                            conn.close()
+                                            st.rerun()
+                else: 
+                    st.write("")
+
+# ==========================================
+# PAGE 5: SEAT STATISTICS
 # ==========================================
 elif selected_page == "📊 Seat Statistics":
     st.subheader("📊 Historical Seat Balances")
@@ -1198,7 +1259,7 @@ elif selected_page == "📊 Seat Statistics":
         st.info("No roster history saved yet.")
 
 # ==========================================
-# PAGE 5: DATA ENTRY (ADMIN ONLY)
+# PAGE 6: DATA ENTRY (ADMIN ONLY)
 # ==========================================
 elif selected_page == "✍️ Data Entry" and is_admin:
     st.subheader("Log New Entries")
@@ -1319,7 +1380,47 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                     st.success(f"Logged Trade: {t_name1} and {t_name2}.")
                     time.sleep(1)
                     st.rerun()
-                    
+
+    st.divider()
+    st.subheader("📆 Log Station Events & Training")
+    ev_col1, ev_col2 = st.columns([1, 1])
+    with ev_col1:
+        with st.form("event_form", clear_on_submit=True):
+            e_date = st.date_input("Event Date", value=target_date)
+            e_type = st.selectbox("Event Type", ["Training", "Meeting", "Inspection", "Important Event", "Other"])
+            e_desc = st.text_input("Description (Required)", placeholder="e.g., Live Fire Training, Chief's Meeting...")
+            t_col1, t_col2 = st.columns(2)
+            e_start = t_col1.text_input("Start Time (e.g., 0900)", "0900")
+            e_end = t_col2.text_input("End Time (e.g., 1100)", "1100")
+            
+            if st.form_submit_button("Save Event"):
+                if not e_desc.strip():
+                    st.error("Please enter a description.")
+                else:
+                    conn = get_db_connection()
+                    conn.cursor().execute("INSERT INTO Station_Events (Target_Date, Event_Type, Description, Start_Time, End_Time) VALUES (%s, %s, %s, %s, %s)", (e_date.strftime("%Y-%m-%d"), e_type, e_desc, e_start, e_end))
+                    conn.commit()
+                    conn.close()
+                    st.success("Event added!")
+                    time.sleep(1)
+                    st.rerun()
+    with ev_col2:
+        st.markdown(f"**Events on {target_date_str}:**")
+        day_events = events_df[events_df['target_date'] == target_date_str] if not events_df.empty else pd.DataFrame()
+        if day_events.empty:
+            st.info("No events logged for this date.")
+        else:
+            for _, ev in day_events.iterrows():
+                with st.container(border=True):
+                    cols = st.columns([4, 1])
+                    cols[0].markdown(f"**{ev['event_type']}**: {ev['description']} ({ev['start_time']}-{ev['end_time']})")
+                    if cols[1].button("🗑", key=f"del_ev_list_{ev['id']}", use_container_width=True):
+                        conn = get_db_connection()
+                        conn.cursor().execute("DELETE FROM Station_Events WHERE id = %s", (ev['id'],))
+                        conn.commit()
+                        conn.close()
+                        st.rerun()
+                        
     st.divider()
     st.subheader("🔧 Manual Roster Overrides")
     ov_col1, ov_col2 = st.columns([1, 1])
@@ -1379,7 +1480,8 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 "Position_Log": "SELECT id, target_date, name, position, hours FROM Position_Log",
                 "OT_Archive": "SELECT id, archive_stamp, notes, name, start_hours, hours_applied, status FROM OT_Archive",
                 "ARO_Watch": "SELECT id, target_date, watch_period, name FROM ARO_Watch",
-                "Manual_Overrides": "SELECT id, target_date, name, seat FROM Manual_Overrides"
+                "Manual_Overrides": "SELECT id, target_date, name, seat FROM Manual_Overrides",
+                "Station_Events": "SELECT id, target_date, event_type, description, start_time, end_time FROM Station_Events"
             }
             
             output = io.BytesIO()
@@ -1414,7 +1516,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                     required_sheets = [
                         "Personnel", "Overtime_Buckets", "Leave_Ledger", 
                         "Overtime_Log", "Shift_Trades_V3", "Position_Log", 
-                        "OT_Archive", "ARO_Watch", "Manual_Overrides"
+                        "OT_Archive", "ARO_Watch", "Manual_Overrides", "Station_Events"
                     ]
                     
                     missing_sheets = [s for s in required_sheets if s not in excel_file.sheet_names]
@@ -1455,7 +1557,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                     st.error(f"Restore failed: {e}")
 
 # ==========================================
-# PAGE 6: ROSTER MANAGEMENT (ADMIN ONLY)
+# PAGE 7: ROSTER MANAGEMENT (ADMIN ONLY)
 # ==========================================
 elif selected_page == "👥 Roster Management" and is_admin:
     st.subheader("👥 Permanent Shift & Personnel Management")
