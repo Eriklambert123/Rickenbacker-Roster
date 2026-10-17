@@ -114,7 +114,7 @@ nav_options = [
     "📊 Seat Statistics"
 ]
 if is_admin: 
-    nav_options.extend(["✍️ Data Entry", "👥 Roster Management"])
+    nav_options.extend(["✍️ Data Entry"])
 
 selected_page = st.sidebar.radio("Go to:", nav_options, label_visibility="collapsed")
 
@@ -615,7 +615,7 @@ else:
 
 all_on_duty = set([p["Name"] for p in am_crew] + [p["Name"] for p in pm_crew])
 
-# Reformatted excluded_watches to prevent copy-paste truncation errors
+# Excluded watches formatted vertically to prevent copy-paste truncation errors
 excluded_watches = {
     am_roster["CH-222"]["AC"], 
     pm_roster["CH-222"]["AC"], 
@@ -1181,54 +1181,106 @@ elif selected_page == "📅 Leave Calendar":
 # PAGE 4: TRAINING & EVENTS CALENDAR
 # ==========================================
 elif selected_page == "📆 Training & Events":
-    cal_col1, cal_col2, _ = st.columns([1, 1, 4])
-    with cal_col1: 
-        selected_month = st.selectbox("Month", range(1, 13), index=target_date.month - 1, format_func=lambda x: calendar.month_name[x], key="ev_month")
-    with cal_col2: 
-        selected_year = st.selectbox("Year", [2025, 2026, 2027], index=1, key="ev_year")
-    st.divider()
-    cal_matrix = calendar.monthcalendar(selected_year, selected_month)
-    days_of_week = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-    header_cols = st.columns(7)
-    for i, day_name in enumerate(days_of_week): 
-        header_cols[i].markdown(f"<h5 style='text-align: center;'>{day_name}</h5>", unsafe_allow_html=True)
+    st.subheader("📆 Training & Events")
     
-    for week in cal_matrix:
-        week_cols = st.columns(7)
-        for i, day in enumerate(week):
-            with week_cols[i]:
-                if day != 0:
-                    current_date = datetime.date(selected_year, selected_month, day)
-                    date_str = current_date.strftime("%Y-%m-%d")
-                    cal_shift_mod = (current_date - anchor_date).days % 3
-                    if cal_shift_mod == 0: 
-                        shift_color, shift_name = "#4CAF50", "A-Shift"
-                    elif cal_shift_mod == 1: 
-                        shift_color, shift_name = "#2196F3", "B-Shift"
-                    else: 
-                        shift_color, shift_name = "#F44336", "C-Shift"
-
-                    day_events = events_df[events_df['target_date'] == date_str] if not events_df.empty else pd.DataFrame()
-                    
-                    with st.container(border=True):
-                        st.markdown(f"<div style='background-color:{shift_color}; color:white; padding: 6px 4px; border-radius: 4px; font-size: 1.25em; font-weight: 800; margin-bottom: 6px; text-align: center;'>{day} | {shift_name}</div>", unsafe_allow_html=True)
+    if is_admin:
+        ev_tabs = st.tabs(["📅 Calendar View", "✍️ Log New Event"])
+        tab_ev_cal = ev_tabs[0]
+        tab_ev_log = ev_tabs[1]
+    else:
+        tab_ev_cal = st.container()
+        tab_ev_log = None
+        
+    with tab_ev_cal:
+        cal_col1, cal_col2, _ = st.columns([1, 1, 4])
+        with cal_col1: 
+            selected_month = st.selectbox("Month", range(1, 13), index=target_date.month - 1, format_func=lambda x: calendar.month_name[x], key="ev_month")
+        with cal_col2: 
+            selected_year = st.selectbox("Year", [2025, 2026, 2027], index=1, key="ev_year")
+        st.divider()
+        cal_matrix = calendar.monthcalendar(selected_year, selected_month)
+        days_of_week = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        header_cols = st.columns(7)
+        for i, day_name in enumerate(days_of_week): 
+            header_cols[i].markdown(f"<h5 style='text-align: center;'>{day_name}</h5>", unsafe_allow_html=True)
+        
+        for week in cal_matrix:
+            week_cols = st.columns(7)
+            for i, day in enumerate(week):
+                with week_cols[i]:
+                    if day != 0:
+                        current_date = datetime.date(selected_year, selected_month, day)
+                        date_str = current_date.strftime("%Y-%m-%d")
+                        cal_shift_mod = (current_date - anchor_date).days % 3
+                        if cal_shift_mod == 0: 
+                            shift_color, shift_name = "#4CAF50", "A-Shift"
+                        elif cal_shift_mod == 1: 
+                            shift_color, shift_name = "#2196F3", "B-Shift"
+                        else: 
+                            shift_color, shift_name = "#F44336", "C-Shift"
+    
+                        day_events = events_df[events_df['target_date'] == date_str] if not events_df.empty else pd.DataFrame()
                         
-                        if not day_events.empty:
-                            for _, ev in day_events.iterrows():
-                                icon = "📚" if ev['event_type'] == "Training" else "📅"
-                                with st.popover(f"{icon} {ev['description']}", use_container_width=True):
-                                    st.markdown(f"**{ev['event_type']}**")
-                                    st.write(f"⏱️ {ev['start_time']} - {ev['end_time']}")
-                                    st.write(f"📝 {ev['description']}")
-                                    if is_admin:
-                                        if st.button("🗑️ Cancel Event", key=f"del_ev_cal_{ev['id']}", type="primary", use_container_width=True):
-                                            conn = get_db_connection()
-                                            conn.cursor().execute("DELETE FROM Station_Events WHERE id = %s", (ev['id'],))
-                                            conn.commit()
-                                            conn.close()
-                                            st.rerun()
-                else: 
-                    st.write("")
+                        with st.container(border=True):
+                            st.markdown(f"<div style='background-color:{shift_color}; color:white; padding: 6px 4px; border-radius: 4px; font-size: 1.25em; font-weight: 800; margin-bottom: 6px; text-align: center;'>{day} | {shift_name}</div>", unsafe_allow_html=True)
+                            
+                            if not day_events.empty:
+                                for _, ev in day_events.iterrows():
+                                    icon = "📚" if ev['event_type'] == "Training" else "📅"
+                                    with st.popover(f"{icon} {ev['description']}", use_container_width=True):
+                                        st.markdown(f"**{ev['event_type']}**")
+                                        st.write(f"⏱️ {ev['start_time']} - {ev['end_time']}")
+                                        st.write(f"📝 {ev['description']}")
+                                        if is_admin:
+                                            if st.button("🗑️ Cancel Event", key=f"del_ev_cal_{ev['id']}", type="primary", use_container_width=True):
+                                                conn = get_db_connection()
+                                                conn.cursor().execute("DELETE FROM Station_Events WHERE id = %s", (ev['id'],))
+                                                conn.commit()
+                                                conn.close()
+                                                st.rerun()
+                    else: 
+                        st.write("")
+                        
+    if tab_ev_log is not None:
+        with tab_ev_log:
+            ev_col1, ev_col2 = st.columns([1, 1])
+            with ev_col1:
+                with st.form("event_form", clear_on_submit=True):
+                    st.markdown("#### 📝 Add New Event")
+                    e_date = st.date_input("Event Date", value=target_date)
+                    e_type = st.selectbox("Event Type", ["Training", "Meeting", "Inspection", "Important Event", "Other"])
+                    e_desc = st.text_input("Description (Required)", placeholder="e.g., Live Fire Training, Chief's Meeting...")
+                    t_col1, t_col2 = st.columns(2)
+                    e_start = t_col1.text_input("Start Time (e.g., 0900)", "0900")
+                    e_end = t_col2.text_input("End Time (e.g., 1100)", "1100")
+                    
+                    if st.form_submit_button("Save Event"):
+                        if not e_desc.strip():
+                            st.error("Please enter a description.")
+                        else:
+                            conn = get_db_connection()
+                            conn.cursor().execute("INSERT INTO Station_Events (Target_Date, Event_Type, Description, Start_Time, End_Time) VALUES (%s, %s, %s, %s, %s)", (e_date.strftime("%Y-%m-%d"), e_type, e_desc, e_start, e_end))
+                            conn.commit()
+                            conn.close()
+                            st.success("Event added!")
+                            time.sleep(1)
+                            st.rerun()
+            with ev_col2:
+                st.markdown(f"#### **Events on {target_date_str}:**")
+                day_events = events_df[events_df['target_date'] == target_date_str] if not events_df.empty else pd.DataFrame()
+                if day_events.empty:
+                    st.info("No events logged for this date.")
+                else:
+                    for _, ev in day_events.iterrows():
+                        with st.container(border=True):
+                            cols = st.columns([4, 1])
+                            cols[0].markdown(f"**{ev['event_type']}**: {ev['description']} ({ev['start_time']}-{ev['end_time']})")
+                            if cols[1].button("🗑", key=f"del_ev_list_{ev['id']}", use_container_width=True):
+                                conn = get_db_connection()
+                                conn.cursor().execute("DELETE FROM Station_Events WHERE id = %s", (ev['id'],))
+                                conn.commit()
+                                conn.close()
+                                st.rerun()
 
 # ==========================================
 # PAGE 5: SEAT STATISTICS
@@ -1259,314 +1311,148 @@ elif selected_page == "📊 Seat Statistics":
         st.info("No roster history saved yet.")
 
 # ==========================================
-# PAGE 6: DATA ENTRY (ADMIN ONLY)
+# PAGE 6: DATA ENTRY & MANAGEMENT (ADMIN ONLY)
 # ==========================================
 elif selected_page == "✍️ Data Entry" and is_admin:
-    st.subheader("Log New Entries")
-    form_col1, form_col2, form_col3 = st.columns(3)
+    st.subheader("✍️ Data Entry & Roster Management")
     
-    with form_col1:
-        with st.form("leave_form", clear_on_submit=True):
-            st.markdown("#### 🏖️ Enter Leave")
-            l_date_range = st.date_input("Target Date(s)", value=(target_date, target_date))
-            l_name = st.selectbox("Personnel", all_names)
-            leave_types = sorted(["Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave", "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical", "Personal Leave", "Disability Leave", "Training"])
-            l_type = st.selectbox("Leave Type", leave_types)
-            l_24h = st.checkbox("Full 24h Shift (0700-0700)", value=True, key="l_24")
-            time_col1, time_col2 = st.columns(2)
-            l_start = time_col1.text_input("Start Time (e.g., 0700)", "0700", key="l_s")
-            l_end = time_col2.text_input("End Time (e.g., 0700)", "0700", key="l_e")
-            
-            if st.form_submit_button("Save Leave"):
-                if isinstance(l_date_range, tuple) or isinstance(l_date_range, list):
-                    start_dt = l_date_range[0]
-                    end_dt = l_date_range[1] if len(l_date_range) > 1 else l_date_range[0]
-                else:
-                    start_dt = end_dt = l_date_range
-                    
-                delta = end_dt - start_dt
-                p_shift = personnel_info.get(l_name, {}).get('Shift', 'A')
-                p_sched = personnel_info.get(l_name, {}).get('Schedule', 'Structural')
+    de_tabs = st.tabs(["🏖️ Leave", "💰 Overtime", "🔀 Shift Trades", "🚒 Shift Roster", "⏱️ OT Canvass List", "🔧 System Tools"])
+    
+    # ----------------------------------------
+    # TAB 1: ENTER LEAVE
+    # ----------------------------------------
+    with de_tabs[0]:
+        st.markdown("#### 🏖️ Enter Leave")
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            with st.form("leave_form", clear_on_submit=True):
+                l_date_range = st.date_input("Target Date(s)", value=(target_date, target_date))
+                l_name = st.selectbox("Personnel", all_names)
+                leave_types = sorted(["Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave", "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical", "Personal Leave", "Disability Leave", "Training"])
+                l_type = st.selectbox("Leave Type", leave_types)
+                l_24h = st.checkbox("Full 24h Shift (0700-0700)", value=True, key="l_24")
+                time_col1, time_col2 = st.columns(2)
+                l_start = time_col1.text_input("Start Time (e.g., 0700)", "0700", key="l_s")
+                l_end = time_col2.text_input("End Time (e.g., 0700)", "0700", key="l_e")
                 
-                dates_to_log = []
-                anchor = datetime.date(2026, 9, 16)
-                for i in range(delta.days + 1):
-                    cur_dt = start_dt + datetime.timedelta(days=i)
-                    if p_sched == 'Admin':
-                        if cur_dt.weekday() < 5: 
-                            dates_to_log.append(cur_dt.strftime("%Y-%m-%d"))
+                if st.form_submit_button("Save Leave", type="primary"):
+                    if isinstance(l_date_range, tuple) or isinstance(l_date_range, list):
+                        start_dt = l_date_range[0]
+                        end_dt = l_date_range[1] if len(l_date_range) > 1 else l_date_range[0]
                     else:
-                        s_mod = (cur_dt - anchor).days % 3
-                        day_s = "A" if s_mod == 0 else ("B" if s_mod == 1 else "C")
-                        if p_shift == day_s: 
-                            dates_to_log.append(cur_dt.strftime("%Y-%m-%d"))
-
-                if not dates_to_log:
-                    st.error("No assigned shift days found in that range for this person.")
-                else:
-                    if l_24h: 
-                        l_start, l_end, l_hours = "0700", "0700", 24.0
-                    else: 
-                        l_hours = calc_hours(l_start, l_end)
+                        start_dt = end_dt = l_date_range
                         
-                    conn = get_db_connection()
-                    inserts = [(d, l_name, l_type, l_start, l_end, l_hours) for d in dates_to_log]
-                    conn.cursor().executemany("INSERT INTO Leave_Ledger (Target_Date, Name, Leave_Type, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s)", inserts)
-                    conn.commit()
-                    conn.close()
-                    st.success(f"Logged {len(dates_to_log)} shift(s) of leave for {l_name}.")
-                    time.sleep(1)
-                    st.rerun()
-
-    with form_col2:
-        with st.form("ot_form", clear_on_submit=True):
-            st.markdown("#### 💰 Enter Overtime / Temp Duty")
-            o_date = st.date_input("Target Date ", value=target_date)
-            o_name_dd = st.selectbox("Permanent Personnel", ["-- Select --"] + all_names, key="ot_personnel") 
-            o_name_wi = st.text_input("OR Write-In Name", placeholder="e.g., A1C Snuffy", key="ot_wi")
-            o_type = st.selectbox("OT Type", ["Voluntary", "Mandatory", "Guard Personnel On-Duty"])
-            o_24h = st.checkbox("Full 24h Shift (0700-0700)", value=False, key="o_24")
-            time_col3, time_col4 = st.columns(2)
-            o_start = time_col3.text_input("Start Time (e.g., 1500)", "1500", key="o_s")
-            o_end = time_col4.text_input("End Time (e.g., 0700)", "0700", key="o_e")
-            
-            if st.form_submit_button("Save OT"):
-                final_name = o_name_wi.strip() if o_name_wi.strip() != "" else o_name_dd
-                if final_name == "-- Select --": 
-                    st.error("Please select a person or write one in!")
-                else:
-                    if o_24h: 
-                        o_start, o_end, o_hours = "0700", "0700", 24.0
-                    else: 
-                        o_hours = calc_hours(o_start, o_end)
-                        
-                    conn = get_db_connection()
-                    conn.cursor().execute("INSERT INTO Overtime_Log (Target_Date, Name, OT_Type, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s)", (o_date.strftime("%Y-%m-%d"), final_name, o_type, o_start, o_end, o_hours))
-                    conn.commit()
-                    conn.close()
-                    st.success(f"Logged OT for {final_name}.")
-                    time.sleep(1)
-                    st.rerun()
-                
-    with form_col3:
-        with st.form("trade_form", clear_on_submit=True):
-            st.markdown("#### 🔀 Enter Shift Trade")
-            st.markdown("**Person 1**")
-            t_name1 = st.selectbox("Name", all_names, key="t_n1")
-            t_date1 = st.date_input("Original Scheduled Date", value=target_date, key="t_d1")
-            st.divider()
-            st.markdown("**Person 2**")
-            t_name2 = st.selectbox("Name", all_names, key="t_n2")
-            t_date2 = st.date_input("Original Scheduled Date", value=target_date, key="t_d2")
-            st.divider()
-            t_24h = st.checkbox("Full 24h Trade (0700-0700)", value=True, key="t_24")
-            time_col5, time_col6 = st.columns(2)
-            t_start = time_col5.text_input("Start Time", "0700", key="t_s")
-            t_end = time_col6.text_input("End Time", "0700", key="t_e")
-            
-            if st.form_submit_button("Save Trade"):
-                if t_name1 == t_name2: 
-                    st.error("Personnel cannot trade with themselves!")
-                else:
-                    if t_24h: 
-                        t_start, t_end, t_hours = "0700", "0700", 24.0
-                    else: 
-                        t_hours = calc_hours(t_start, t_end)
-                        
-                    conn = get_db_connection()
-                    conn.cursor().execute("INSERT INTO Shift_Trades_V3 (Date_1, Name_1, Date_2, Name_2, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s, %s)", (t_date1.strftime("%Y-%m-%d"), t_name1, t_date2.strftime("%Y-%m-%d"), t_name2, t_start, t_end, t_hours))
-                    conn.commit()
-                    conn.close()
-                    st.success(f"Logged Trade: {t_name1} and {t_name2}.")
-                    time.sleep(1)
-                    st.rerun()
-
-    st.divider()
-    st.subheader("📆 Log Station Events & Training")
-    ev_col1, ev_col2 = st.columns([1, 1])
-    with ev_col1:
-        with st.form("event_form", clear_on_submit=True):
-            e_date = st.date_input("Event Date", value=target_date)
-            e_type = st.selectbox("Event Type", ["Training", "Meeting", "Inspection", "Important Event", "Other"])
-            e_desc = st.text_input("Description (Required)", placeholder="e.g., Live Fire Training, Chief's Meeting...")
-            t_col1, t_col2 = st.columns(2)
-            e_start = t_col1.text_input("Start Time (e.g., 0900)", "0900")
-            e_end = t_col2.text_input("End Time (e.g., 1100)", "1100")
-            
-            if st.form_submit_button("Save Event"):
-                if not e_desc.strip():
-                    st.error("Please enter a description.")
-                else:
-                    conn = get_db_connection()
-                    conn.cursor().execute("INSERT INTO Station_Events (Target_Date, Event_Type, Description, Start_Time, End_Time) VALUES (%s, %s, %s, %s, %s)", (e_date.strftime("%Y-%m-%d"), e_type, e_desc, e_start, e_end))
-                    conn.commit()
-                    conn.close()
-                    st.success("Event added!")
-                    time.sleep(1)
-                    st.rerun()
-    with ev_col2:
-        st.markdown(f"**Events on {target_date_str}:**")
-        day_events = events_df[events_df['target_date'] == target_date_str] if not events_df.empty else pd.DataFrame()
-        if day_events.empty:
-            st.info("No events logged for this date.")
-        else:
-            for _, ev in day_events.iterrows():
-                with st.container(border=True):
-                    cols = st.columns([4, 1])
-                    cols[0].markdown(f"**{ev['event_type']}**: {ev['description']} ({ev['start_time']}-{ev['end_time']})")
-                    if cols[1].button("🗑", key=f"del_ev_list_{ev['id']}", use_container_width=True):
-                        conn = get_db_connection()
-                        conn.cursor().execute("DELETE FROM Station_Events WHERE id = %s", (ev['id'],))
-                        conn.commit()
-                        conn.close()
-                        st.rerun()
-                        
-    st.divider()
-    st.subheader("🔧 Manual Roster Overrides")
-    ov_col1, ov_col2 = st.columns([1, 1])
-    with ov_col1:
-        with st.form("override_form", clear_on_submit=True):
-            st.markdown(f"**Target Date:** {target_date_str}")
-            o_name = st.selectbox("Personnel", on_duty_dropdown_list, key="ov_n")
-            o_seat = st.selectbox("Assign to Seat", all_seats_list, key="ov_s")
-            
-            if st.form_submit_button("Lock Seat Override"):
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, o_seat))
-                c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
-                c.execute("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", (target_date_str, o_name, o_seat))
-                conn.commit()
-                conn.close()
-                st.success(f"Locked {o_name} into {o_seat}.")
-                time.sleep(1)
-                st.rerun()
-                
-    with ov_col2:
-        st.markdown(f"**Active Overrides for Selected Date ({target_date_str}):**")
-        if overrides_df.empty:
-            st.info("No active overrides for this date.")
-        else:
-            for _, ov in overrides_df.iterrows():
-                with st.container(border=True):
-                    cols = st.columns([4, 1])
-                    cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']}")
-                    if cols[1].button("🗑", key=f"del_ov_{ov['id']}", use_container_width=True):
-                        conn = get_db_connection()
-                        conn.cursor().execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
-                        conn.commit()
-                        conn.close()
-                        st.rerun()
-
-    st.divider()
-    st.subheader("💾 System Backups & Disaster Recovery")
-    st.markdown("Download a full snapshot of all active tables, or restore the database from a previously downloaded snapshot.")
-
-    bak_col1, bak_col2 = st.columns(2)
-
-    # --- 1. EXPORT SNAPSHOT ---
-    with bak_col1:
-        st.markdown("#### 📤 Export Backup")
-        st.caption("Creates an Excel workbook containing a complete snapshot of every database table.")
-        
-        if st.button("Generate Backup File", use_container_width=True):
-            conn = get_db_connection()
-            table_queries = {
-                "Personnel": "SELECT name, seniority, core_manning, schedule, shift FROM Personnel",
-                "Overtime_Buckets": "SELECT name, seniority, shift, current_hours, contact FROM Overtime_Buckets",
-                "Leave_Ledger": "SELECT id, target_date, name, leave_type, start_time, end_time, total_hours FROM Leave_Ledger",
-                "Overtime_Log": "SELECT id, target_date, name, ot_type, start_time, end_time, total_hours FROM Overtime_Log",
-                "Shift_Trades_V3": "SELECT id, date_1, name_1, date_2, name_2, start_time, end_time, total_hours FROM Shift_Trades_V3",
-                "Position_Log": "SELECT id, target_date, name, position, hours FROM Position_Log",
-                "OT_Archive": "SELECT id, archive_stamp, notes, name, start_hours, hours_applied, status FROM OT_Archive",
-                "ARO_Watch": "SELECT id, target_date, watch_period, name FROM ARO_Watch",
-                "Manual_Overrides": "SELECT id, target_date, name, seat FROM Manual_Overrides",
-                "Station_Events": "SELECT id, target_date, event_type, description, start_time, end_time FROM Station_Events"
-            }
-            
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                for t_name, q in table_queries.items():
-                    df = pd.read_sql(q, conn)
-                    df.to_excel(writer, sheet_name=t_name, index=False)
-            conn.close()
-            
-            snap_time = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-            st.download_button(
-                label=f"⬇️ Download Snapshot ({snap_time}.xlsx)",
-                data=output.getvalue(),
-                file_name=f"RFD_Roster_Backup_{snap_time}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary",
-                use_container_width=True
-            )
-
-    # --- 2. RESTORE SNAPSHOT ---
-    with bak_col2:
-        st.markdown("#### 📥 Restore from Backup")
-        st.caption("Upload a verified snapshot file to completely reset the database to that moment in time.")
-        
-        uploaded_backup = st.file_uploader("Upload Backup Excel File", type=["xlsx"], key="restore_file")
-        
-        if uploaded_backup is not None:
-            st.warning("⚠️ Restoring will overwrite all current data with the contents of this file.")
-            if st.button("🚨 Overwrite & Restore Database", type="primary", use_container_width=True):
-                try:
-                    excel_file = pd.ExcelFile(uploaded_backup)
-                    required_sheets = [
-                        "Personnel", "Overtime_Buckets", "Leave_Ledger", 
-                        "Overtime_Log", "Shift_Trades_V3", "Position_Log", 
-                        "OT_Archive", "ARO_Watch", "Manual_Overrides", "Station_Events"
-                    ]
+                    delta = end_dt - start_dt
+                    p_shift = personnel_info.get(l_name, {}).get('Shift', 'A')
+                    p_sched = personnel_info.get(l_name, {}).get('Schedule', 'Structural')
                     
-                    missing_sheets = [s for s in required_sheets if s not in excel_file.sheet_names]
-                    if missing_sheets:
-                        st.error(f"Invalid backup file! Missing sheets: {', '.join(missing_sheets)}")
+                    dates_to_log = []
+                    anchor = datetime.date(2026, 9, 16)
+                    for i in range(delta.days + 1):
+                        cur_dt = start_dt + datetime.timedelta(days=i)
+                        if p_sched == 'Admin':
+                            if cur_dt.weekday() < 5: 
+                                dates_to_log.append(cur_dt.strftime("%Y-%m-%d"))
+                        else:
+                            s_mod = (cur_dt - anchor).days % 3
+                            day_s = "A" if s_mod == 0 else ("B" if s_mod == 1 else "C")
+                            if p_shift == day_s: 
+                                dates_to_log.append(cur_dt.strftime("%Y-%m-%d"))
+
+                    if not dates_to_log:
+                        st.error("No assigned shift days found in that range for this person.")
                     else:
+                        if l_24h: 
+                            l_start, l_end, l_hours = "0700", "0700", 24.0
+                        else: 
+                            l_hours = calc_hours(l_start, l_end)
+                            
                         conn = get_db_connection()
-                        c = conn.cursor()
-                        
-                        for t in reversed(required_sheets):
-                            c.execute(f"DELETE FROM {t};")
-                            
-                        for t in required_sheets:
-                            df = pd.read_excel(excel_file, sheet_name=t)
-                            df = df.where(pd.notnull(df), None)
-                            
-                            if not df.empty:
-                                cols = list(df.columns)
-                                col_str = ", ".join(cols)
-                                val_placeholders = ", ".join(["%s"] * len(cols))
-                                query = f"INSERT INTO {t} ({col_str}) VALUES ({val_placeholders})"
-                                
-                                records = [tuple(row) for row in df.to_numpy()]
-                                c.executemany(query, records)
-                                
-                            if "id" in [col.lower() for col in df.columns]:
-                                c.execute(f"SELECT setval(pg_get_serial_sequence('{t}', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM {t};")
-                        
+                        inserts = [(d, l_name, l_type, l_start, l_end, l_hours) for d in dates_to_log]
+                        conn.cursor().executemany("INSERT INTO Leave_Ledger (Target_Date, Name, Leave_Type, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s)", inserts)
                         conn.commit()
                         conn.close()
-                        st.success("✅ Database successfully restored to snapshot state!")
-                        time.sleep(2)
+                        st.success(f"Logged {len(dates_to_log)} shift(s) of leave for {l_name}.")
+                        time.sleep(1)
                         st.rerun()
-                except Exception as e:
-                    if 'conn' in locals() and conn:
-                        conn.rollback()
-                        conn.close()
-                    st.error(f"Restore failed: {e}")
 
-# ==========================================
-# PAGE 7: ROSTER MANAGEMENT (ADMIN ONLY)
-# ==========================================
-elif selected_page == "👥 Roster Management" and is_admin:
-    st.subheader("👥 Permanent Shift & Personnel Management")
-    st.markdown("Edit shift assignments, update seniority numbers, add new hires (click `+` at the bottom of a table), or remove departed personnel (select row on the left and press `Delete`).")
-    
-    p_col1, p_col2 = st.columns(2)
-    
-    # --- 1. PRIMARY SHIFT ROSTER EDITOR ---
-    with p_col1:
+    # ----------------------------------------
+    # TAB 2: ENTER OVERTIME
+    # ----------------------------------------
+    with de_tabs[1]:
+        st.markdown("#### 💰 Enter Overtime / Temp Duty")
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            with st.form("ot_form", clear_on_submit=True):
+                o_date = st.date_input("Target Date ", value=target_date)
+                o_name_dd = st.selectbox("Permanent Personnel", ["-- Select --"] + all_names, key="ot_personnel") 
+                o_name_wi = st.text_input("OR Write-In Name", placeholder="e.g., A1C Snuffy", key="ot_wi")
+                o_type = st.selectbox("OT Type", ["Voluntary", "Mandatory", "Guard Personnel On-Duty"])
+                o_24h = st.checkbox("Full 24h Shift (0700-0700)", value=False, key="o_24")
+                time_col3, time_col4 = st.columns(2)
+                o_start = time_col3.text_input("Start Time (e.g., 1500)", "1500", key="o_s")
+                o_end = time_col4.text_input("End Time (e.g., 0700)", "0700", key="o_e")
+                
+                if st.form_submit_button("Save OT", type="primary"):
+                    final_name = o_name_wi.strip() if o_name_wi.strip() != "" else o_name_dd
+                    if final_name == "-- Select --": 
+                        st.error("Please select a person or write one in!")
+                    else:
+                        if o_24h: 
+                            o_start, o_end, o_hours = "0700", "0700", 24.0
+                        else: 
+                            o_hours = calc_hours(o_start, o_end)
+                            
+                        conn = get_db_connection()
+                        conn.cursor().execute("INSERT INTO Overtime_Log (Target_Date, Name, OT_Type, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s)", (o_date.strftime("%Y-%m-%d"), final_name, o_type, o_start, o_end, o_hours))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Logged OT for {final_name}.")
+                        time.sleep(1)
+                        st.rerun()
+
+    # ----------------------------------------
+    # TAB 3: SHIFT TRADES
+    # ----------------------------------------
+    with de_tabs[2]:
+        st.markdown("#### 🔀 Enter Shift Trade")
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            with st.form("trade_form", clear_on_submit=True):
+                st.markdown("**Person 1**")
+                t_name1 = st.selectbox("Name", all_names, key="t_n1")
+                t_date1 = st.date_input("Original Scheduled Date", value=target_date, key="t_d1")
+                st.divider()
+                st.markdown("**Person 2**")
+                t_name2 = st.selectbox("Name", all_names, key="t_n2")
+                t_date2 = st.date_input("Original Scheduled Date", value=target_date, key="t_d2")
+                st.divider()
+                t_24h = st.checkbox("Full 24h Trade (0700-0700)", value=True, key="t_24")
+                time_col5, time_col6 = st.columns(2)
+                t_start = time_col5.text_input("Start Time", "0700", key="t_s")
+                t_end = time_col6.text_input("End Time", "0700", key="t_e")
+                
+                if st.form_submit_button("Save Trade", type="primary"):
+                    if t_name1 == t_name2: 
+                        st.error("Personnel cannot trade with themselves!")
+                    else:
+                        if t_24h: 
+                            t_start, t_end, t_hours = "0700", "0700", 24.0
+                        else: 
+                            t_hours = calc_hours(t_start, t_end)
+                            
+                        conn = get_db_connection()
+                        conn.cursor().execute("INSERT INTO Shift_Trades_V3 (Date_1, Name_1, Date_2, Name_2, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s, %s)", (t_date1.strftime("%Y-%m-%d"), t_name1, t_date2.strftime("%Y-%m-%d"), t_name2, t_start, t_end, t_hours))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Logged Trade: {t_name1} and {t_name2}.")
+                        time.sleep(1)
+                        st.rerun()
+
+    # ----------------------------------------
+    # TAB 4: PRIMARY SHIFT ROSTER
+    # ----------------------------------------
+    with de_tabs[3]:
         st.markdown("#### 🚒 Primary Shift Roster (`Personnel`)")
         st.caption("Controls Daily Roster, Leave Calendar, and Apparatus Seats. Seniority 1–4 = AC, 5 = Admin Capt, 6–8 = Station Capt, 9–10 = Lt, 11+ = Firefighter.")
         
@@ -1621,8 +1507,10 @@ elif selected_page == "👥 Roster Management" and is_admin:
                 conn.close()
                 st.error(f"Error saving Primary Roster: {e}")
 
-    # --- 2. OVERTIME BUCKETS EDITOR ---
-    with p_col2:
+    # ----------------------------------------
+    # TAB 5: OVERTIME BUCKETS
+    # ----------------------------------------
+    with de_tabs[4]:
         st.markdown("#### ⏱️ Overtime Canvass List (`Overtime_Buckets`)")
         st.caption("Controls the Overtime Roster tab. Update Shift or Contact status ('Yes' / 'No') when personnel transfer shifts or join the OT list.")
         
@@ -1682,3 +1570,146 @@ elif selected_page == "👥 Roster Management" and is_admin:
                 conn.rollback()
                 conn.close()
                 st.error(f"Error saving Overtime List: {e}")
+
+    # ----------------------------------------
+    # TAB 6: SYSTEM TOOLS
+    # ----------------------------------------
+    with de_tabs[5]:
+        st.subheader("🔧 Manual Roster Overrides")
+        ov_col1, ov_col2 = st.columns([1, 1])
+        with ov_col1:
+            with st.form("override_form", clear_on_submit=True):
+                st.markdown(f"**Target Date:** {target_date_str}")
+                o_name = st.selectbox("Personnel", on_duty_dropdown_list, key="ov_n")
+                o_seat = st.selectbox("Assign to Seat", all_seats_list, key="ov_s")
+                
+                if st.form_submit_button("Lock Seat Override", type="primary"):
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, o_seat))
+                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
+                    c.execute("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", (target_date_str, o_name, o_seat))
+                    conn.commit()
+                    conn.close()
+                    st.success(f"Locked {o_name} into {o_seat}.")
+                    time.sleep(1)
+                    st.rerun()
+                    
+        with ov_col2:
+            st.markdown(f"**Active Overrides for Selected Date ({target_date_str}):**")
+            if overrides_df.empty:
+                st.info("No active overrides for this date.")
+            else:
+                for _, ov in overrides_df.iterrows():
+                    with st.container(border=True):
+                        cols = st.columns([4, 1])
+                        cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']}")
+                        if cols[1].button("🗑", key=f"del_ov_{ov['id']}", use_container_width=True):
+                            conn = get_db_connection()
+                            conn.cursor().execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
+
+        st.divider()
+        st.subheader("💾 Database Backups & Disaster Recovery")
+        st.markdown("Download a full snapshot of all active tables, or restore the database from a previously downloaded snapshot.")
+
+        bak_col1, bak_col2 = st.columns(2)
+
+        # --- EXPORT SNAPSHOT ---
+        with bak_col1:
+            st.markdown("#### 📤 Export Backup")
+            st.caption("Creates an Excel workbook containing a complete snapshot of every database table.")
+            
+            if st.button("Generate Backup File", use_container_width=True):
+                conn = get_db_connection()
+                table_queries = {
+                    "Personnel": "SELECT name, seniority, core_manning, schedule, shift FROM Personnel",
+                    "Overtime_Buckets": "SELECT name, seniority, shift, current_hours, contact FROM Overtime_Buckets",
+                    "Leave_Ledger": "SELECT id, target_date, name, leave_type, start_time, end_time, total_hours FROM Leave_Ledger",
+                    "Overtime_Log": "SELECT id, target_date, name, ot_type, start_time, end_time, total_hours FROM Overtime_Log",
+                    "Shift_Trades_V3": "SELECT id, date_1, name_1, date_2, name_2, start_time, end_time, total_hours FROM Shift_Trades_V3",
+                    "Position_Log": "SELECT id, target_date, name, position, hours FROM Position_Log",
+                    "OT_Archive": "SELECT id, archive_stamp, notes, name, start_hours, hours_applied, status FROM OT_Archive",
+                    "ARO_Watch": "SELECT id, target_date, watch_period, name FROM ARO_Watch",
+                    "Manual_Overrides": "SELECT id, target_date, name, seat FROM Manual_Overrides",
+                    "Station_Events": "SELECT id, target_date, event_type, description, start_time, end_time FROM Station_Events"
+                }
+                
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    for t_name, q in table_queries.items():
+                        df = pd.read_sql(q, conn)
+                        df.to_excel(writer, sheet_name=t_name, index=False)
+                conn.close()
+                
+                snap_time = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+                st.download_button(
+                    label=f"⬇️ Download Snapshot ({snap_time}.xlsx)",
+                    data=output.getvalue(),
+                    file_name=f"RFD_Roster_Backup_{snap_time}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True
+                )
+
+        # --- RESTORE SNAPSHOT ---
+        with bak_col2:
+            st.markdown("#### 📥 Restore from Backup")
+            st.caption("Upload a verified snapshot file to completely reset the database to that moment in time.")
+            
+            uploaded_backup = st.file_uploader("Upload Backup Excel File", type=["xlsx"], key="restore_file")
+            
+            if uploaded_backup is not None:
+                st.warning("⚠️ Restoring will overwrite all current data with the contents of this file.")
+                if st.button("🚨 Overwrite & Restore Database", type="primary", use_container_width=True):
+                    try:
+                        excel_file = pd.ExcelFile(uploaded_backup)
+                        
+                        core_sheets = [
+                            "Personnel", "Overtime_Buckets", "Leave_Ledger", 
+                            "Overtime_Log", "Shift_Trades_V3", "Position_Log", 
+                            "OT_Archive", "ARO_Watch", "Manual_Overrides"
+                        ]
+                        
+                        missing_core = [s for s in core_sheets if s not in excel_file.sheet_names]
+                        if missing_core:
+                            st.error(f"Invalid backup file! Missing required sheets: {', '.join(missing_core)}")
+                        else:
+                            conn = get_db_connection()
+                            c = conn.cursor()
+                            
+                            all_possible_sheets = core_sheets + ["Station_Events"]
+                            
+                            for t in reversed(all_possible_sheets):
+                                if t in excel_file.sheet_names:
+                                    c.execute(f"DELETE FROM {t};")
+                                    
+                            for t in all_possible_sheets:
+                                if t in excel_file.sheet_names:
+                                    df = pd.read_excel(excel_file, sheet_name=t)
+                                    df = df.where(pd.notnull(df), None)
+                                    
+                                    if not df.empty:
+                                        cols = list(df.columns)
+                                        col_str = ", ".join(cols)
+                                        val_placeholders = ", ".join(["%s"] * len(cols))
+                                        query = f"INSERT INTO {t} ({col_str}) VALUES ({val_placeholders})"
+                                        
+                                        records = [tuple(row) for row in df.to_numpy()]
+                                        c.executemany(query, records)
+                                        
+                                    if "id" in [col.lower() for col in df.columns]:
+                                        c.execute(f"SELECT setval(pg_get_serial_sequence('{t}', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM {t};")
+                            
+                            conn.commit()
+                            conn.close()
+                            st.success("✅ Database successfully restored to snapshot state!")
+                            time.sleep(2)
+                            st.rerun()
+                    except Exception as e:
+                        if 'conn' in locals() and conn:
+                            conn.rollback()
+                            conn.close()
+                        st.error(f"Restore failed: {e}")
