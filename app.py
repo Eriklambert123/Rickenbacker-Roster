@@ -134,7 +134,10 @@ c.execute('''CREATE TABLE IF NOT EXISTS Manual_Overrides (id SERIAL PRIMARY KEY,
 c.execute('''CREATE TABLE IF NOT EXISTS Personnel (Name TEXT, Seniority INTEGER, Core_Manning BOOLEAN, Schedule TEXT, Shift TEXT)''')
 c.execute('''CREATE TABLE IF NOT EXISTS Leave_Ledger (id SERIAL PRIMARY KEY, Target_Date TEXT, Name TEXT, Leave_Type TEXT, Start_Time TEXT, End_Time TEXT, Total_Hours REAL)''')
 c.execute('''CREATE TABLE IF NOT EXISTS Overtime_Log (id SERIAL PRIMARY KEY, Target_Date TEXT, Name TEXT, OT_Type TEXT, Start_Time TEXT, End_Time TEXT, Total_Hours REAL)''')
-c.execute('''CREATE TABLE IF NOT EXISTS Station_Events (id SERIAL PRIMARY KEY, Target_Date TEXT, Event_Type TEXT, Description TEXT, Start_Time TEXT, End_Time TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS Station_Events (id SERIAL PRIMARY KEY, Target_Date TEXT, Event_Type TEXT, Description TEXT, Start_Time TEXT, End_Time TEXT, Instructor TEXT)''')
+
+# Safely add the Instructor column to existing installations
+c.execute('''ALTER TABLE Station_Events ADD COLUMN IF NOT EXISTS Instructor TEXT''')
 
 # Create Overtime Bucket & Archive Tables
 c.execute('''CREATE TABLE IF NOT EXISTS Overtime_Buckets (Name TEXT PRIMARY KEY, Seniority INTEGER, Shift TEXT, Current_Hours REAL, Contact TEXT)''')
@@ -221,7 +224,7 @@ events_df = pd.read_sql("SELECT * FROM Station_Events", conn)
 if not events_df.empty: 
     events_df.columns = [c.lower() for c in events_df.columns]
 else: 
-    events_df = pd.DataFrame(columns=["id", "target_date", "event_type", "description", "start_time", "end_time"])
+    events_df = pd.DataFrame(columns=["id", "target_date", "event_type", "description", "start_time", "end_time", "instructor"])
 
 conn.close()
 
@@ -859,6 +862,43 @@ if selected_page == "📋 Daily Roster":
     else:
         st.info(f"No specific station deep-cleaning details are officially assigned for {day_of_week}s.")
 
+    if is_admin:
+        st.divider()
+        st.subheader("🔧 Manual Roster Overrides")
+        ov_col1, ov_col2 = st.columns([1, 1])
+        with ov_col1:
+            with st.form("override_form", clear_on_submit=True):
+                st.markdown(f"**Target Date:** {target_date_str}")
+                o_name = st.selectbox("Personnel", on_duty_dropdown_list, key="ov_n")
+                o_seat = st.selectbox("Assign to Seat", all_seats_list, key="ov_s")
+                
+                if st.form_submit_button("Lock Seat Override", type="primary"):
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, o_seat))
+                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
+                    c.execute("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", (target_date_str, o_name, o_seat))
+                    conn.commit()
+                    conn.close()
+                    st.success(f"Locked {o_name} into {o_seat}.")
+                    time.sleep(1)
+                    st.rerun()
+                    
+        with ov_col2:
+            st.markdown(f"**Active Overrides for Selected Date ({target_date_str}):**")
+            if overrides_df.empty:
+                st.info("No active overrides for this date.")
+            else:
+                for _, ov in overrides_df.iterrows():
+                    with st.container(border=True):
+                        cols = st.columns([4, 1])
+                        cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']}")
+                        if cols[1].button("🗑", key=f"del_ov_{ov['id']}", use_container_width=True):
+                            conn = get_db_connection()
+                            conn.cursor().execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
 
 # ==========================================
 # PAGE 2: OVERTIME ROSTER
@@ -1231,6 +1271,11 @@ elif selected_page == "📆 Training & Events":
                                         st.markdown(f"**{ev['event_type']}**")
                                         st.write(f"⏱️ {ev['start_time']} - {ev['end_time']}")
                                         st.write(f"📝 {ev['description']}")
+                                        
+                                        instructor_val = ev.get('instructor')
+                                        if pd.notna(instructor_val) and instructor_val not in ["", "-- None --"]:
+                                            st.write(f"👨‍🏫 **Instructor:** {instructor_val}")
+                                            
                                         if is_admin:
                                             if st.button("🗑️ Cancel Event", key=f"del_ev_cal_{ev['id']}", type="primary", use_container_width=True):
                                                 conn = get_db_connection()
@@ -1249,17 +1294,21 @@ elif selected_page == "📆 Training & Events":
                     st.markdown("#### 📝 Add New Event")
                     e_date = st.date_input("Event Date", value=target_date)
                     e_type = st.selectbox("Event Type", ["Training", "Meeting", "Inspection", "Important Event", "Other"])
+                    
+                    instructor_cands = sorted(list(set(on_duty_dropdown_list).union(admin_names)))
+                    e_instructor = st.selectbox("Instructor (if applicable)", ["-- None --"] + instructor_cands)
+                    
                     e_desc = st.text_input("Description (Required)", placeholder="e.g., Live Fire Training, Chief's Meeting...")
                     t_col1, t_col2 = st.columns(2)
                     e_start = t_col1.text_input("Start Time (e.g., 0900)", "0900")
                     e_end = t_col2.text_input("End Time (e.g., 1100)", "1100")
                     
-                    if st.form_submit_button("Save Event"):
+                    if st.form_submit_button("Save Event", type="primary"):
                         if not e_desc.strip():
                             st.error("Please enter a description.")
                         else:
                             conn = get_db_connection()
-                            conn.cursor().execute("INSERT INTO Station_Events (Target_Date, Event_Type, Description, Start_Time, End_Time) VALUES (%s, %s, %s, %s, %s)", (e_date.strftime("%Y-%m-%d"), e_type, e_desc, e_start, e_end))
+                            conn.cursor().execute("INSERT INTO Station_Events (Target_Date, Event_Type, Description, Start_Time, End_Time, Instructor) VALUES (%s, %s, %s, %s, %s, %s)", (e_date.strftime("%Y-%m-%d"), e_type, e_desc, e_start, e_end, e_instructor))
                             conn.commit()
                             conn.close()
                             st.success("Event added!")
@@ -1275,6 +1324,11 @@ elif selected_page == "📆 Training & Events":
                         with st.container(border=True):
                             cols = st.columns([4, 1])
                             cols[0].markdown(f"**{ev['event_type']}**: {ev['description']} ({ev['start_time']}-{ev['end_time']})")
+                            
+                            instructor_val = ev.get('instructor')
+                            if pd.notna(instructor_val) and instructor_val not in ["", "-- None --"]:
+                                cols[0].caption(f"👨‍🏫 **Instructor:** {instructor_val}")
+                                
                             if cols[1].button("🗑", key=f"del_ev_list_{ev['id']}", use_container_width=True):
                                 conn = get_db_connection()
                                 conn.cursor().execute("DELETE FROM Station_Events WHERE id = %s", (ev['id'],))
@@ -1316,7 +1370,7 @@ elif selected_page == "📊 Seat Statistics":
 elif selected_page == "✍️ Data Entry" and is_admin:
     st.subheader("✍️ Data Entry & Roster Management")
     
-    de_tabs = st.tabs(["🏖️ Leave", "💰 Overtime", "🔀 Shift Trades", "🚒 Shift Roster", "⏱️ OT Canvass List", "🔧 System Tools"])
+    de_tabs = st.tabs(["🏖️ Leave", "💰 Overtime", "🔀 Shift Trades", "🚒 Shift Roster", "⏱️ OT Canvass List", "💾 Backups"])
     
     # ----------------------------------------
     # TAB 1: ENTER LEAVE
@@ -1572,46 +1626,9 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 st.error(f"Error saving Overtime List: {e}")
 
     # ----------------------------------------
-    # TAB 6: SYSTEM TOOLS
+    # TAB 6: DATABASE BACKUPS
     # ----------------------------------------
     with de_tabs[5]:
-        st.subheader("🔧 Manual Roster Overrides")
-        ov_col1, ov_col2 = st.columns([1, 1])
-        with ov_col1:
-            with st.form("override_form", clear_on_submit=True):
-                st.markdown(f"**Target Date:** {target_date_str}")
-                o_name = st.selectbox("Personnel", on_duty_dropdown_list, key="ov_n")
-                o_seat = st.selectbox("Assign to Seat", all_seats_list, key="ov_s")
-                
-                if st.form_submit_button("Lock Seat Override", type="primary"):
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, o_seat))
-                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
-                    c.execute("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", (target_date_str, o_name, o_seat))
-                    conn.commit()
-                    conn.close()
-                    st.success(f"Locked {o_name} into {o_seat}.")
-                    time.sleep(1)
-                    st.rerun()
-                    
-        with ov_col2:
-            st.markdown(f"**Active Overrides for Selected Date ({target_date_str}):**")
-            if overrides_df.empty:
-                st.info("No active overrides for this date.")
-            else:
-                for _, ov in overrides_df.iterrows():
-                    with st.container(border=True):
-                        cols = st.columns([4, 1])
-                        cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']}")
-                        if cols[1].button("🗑", key=f"del_ov_{ov['id']}", use_container_width=True):
-                            conn = get_db_connection()
-                            conn.cursor().execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
-                            conn.commit()
-                            conn.close()
-                            st.rerun()
-
-        st.divider()
         st.subheader("💾 Database Backups & Disaster Recovery")
         st.markdown("Download a full snapshot of all active tables, or restore the database from a previously downloaded snapshot.")
 
@@ -1634,7 +1651,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                     "OT_Archive": "SELECT id, archive_stamp, notes, name, start_hours, hours_applied, status FROM OT_Archive",
                     "ARO_Watch": "SELECT id, target_date, watch_period, name FROM ARO_Watch",
                     "Manual_Overrides": "SELECT id, target_date, name, seat FROM Manual_Overrides",
-                    "Station_Events": "SELECT id, target_date, event_type, description, start_time, end_time FROM Station_Events"
+                    "Station_Events": "SELECT id, target_date, event_type, description, start_time, end_time, instructor FROM Station_Events"
                 }
                 
                 output = io.BytesIO()
