@@ -136,12 +136,16 @@ c.execute('''CREATE TABLE IF NOT EXISTS Leave_Ledger (id SERIAL PRIMARY KEY, Tar
 c.execute('''CREATE TABLE IF NOT EXISTS Overtime_Log (id SERIAL PRIMARY KEY, Target_Date TEXT, Name TEXT, OT_Type TEXT, Start_Time TEXT, End_Time TEXT, Total_Hours REAL)''')
 c.execute('''CREATE TABLE IF NOT EXISTS Station_Events (id SERIAL PRIMARY KEY, Target_Date TEXT, Event_Type TEXT, Description TEXT, Start_Time TEXT, End_Time TEXT, Instructor TEXT)''')
 
-# Safely add the Instructor column to existing installations
-c.execute('''ALTER TABLE Station_Events ADD COLUMN IF NOT EXISTS Instructor TEXT''')
-
 # Create Overtime Bucket & Archive Tables
 c.execute('''CREATE TABLE IF NOT EXISTS Overtime_Buckets (Name TEXT PRIMARY KEY, Seniority INTEGER, Shift TEXT, Current_Hours REAL, Contact TEXT)''')
 c.execute('''CREATE TABLE IF NOT EXISTS OT_Archive (id SERIAL PRIMARY KEY, Archive_Stamp TEXT, Notes TEXT, Name TEXT, Start_Hours REAL, Hours_Applied REAL, Status TEXT)''')
+
+# Safely apply database schema updates (Adds Certification Tracking)
+c.execute('''ALTER TABLE Station_Events ADD COLUMN IF NOT EXISTS Instructor TEXT''')
+c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_1 BOOLEAN DEFAULT FALSE''')
+c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_2 BOOLEAN DEFAULT FALSE''')
+c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Inspector BOOLEAN DEFAULT FALSE''')
+c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Instructor BOOLEAN DEFAULT FALSE''')
 
 # Auto-Seed Primary Roster if Blank
 c.execute("SELECT COUNT(*) FROM Personnel")
@@ -231,7 +235,16 @@ conn.close()
 personnel_info = {}
 admin_names = set()
 for _, r in all_personnel_df.iterrows():
-    personnel_info[r['name']] = {'Seniority': r['seniority'], 'Schedule': r['schedule'], 'Core': r['core_manning'], 'Shift': r['shift']}
+    personnel_info[r['name']] = {
+        'Seniority': r['seniority'], 
+        'Schedule': r['schedule'], 
+        'Core': r['core_manning'], 
+        'Shift': r['shift'],
+        'Officer_1': r.get('officer_1', False) == True,
+        'Officer_2': r.get('officer_2', False) == True,
+        'Inspector': r.get('inspector', False) == True,
+        'Instructor': r.get('instructor', False) == True
+    }
     if r['schedule'] == 'Admin': 
         admin_names.add(r['name'])
 
@@ -430,7 +443,7 @@ for seat_name, locked_name in seat_to_override.items():
                 am_rigs[rig][pos] = am_pool.pop(i)["Name"]
                 break
 
-# 2. Assign Officers
+# 2. Assign Officers (WITH CERTIFICATION FILTERING)
 for rig, pos in officer_seats:
     if am_pool and am_rigs[rig][pos] == "":
         chosen = None
@@ -438,17 +451,26 @@ for rig, pos in officer_seats:
             cands = [p for p in am_pool if p['Seniority'] <= 4]
             if cands: 
                 chosen = cands[0]
-        elif rig == "E-221":
-            cands = [p for p in am_pool if 6 <= p['Seniority'] <= 8]
-            if cands: 
-                chosen = cands[0]
-        elif rig == "R-221":
-            cands = [p for p in am_pool if p['Seniority'] == 5]
-            if not cands: 
-                cands = [p for p in am_pool if 9 <= p['Seniority'] <= 10]
-            if cands: 
-                chosen = cands[0]
+        else:
+            # Filter pool strictly for personnel holding the Officer_1 certification
+            cert_cands = [p for p in am_pool if personnel_info.get(p["Name"].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", ""), {}).get('Officer_1', False)]
+            
+            if rig == "E-221":
+                pref_cands = [p for p in cert_cands if 6 <= p['Seniority'] <= 8]
+                if pref_cands: 
+                    chosen = pref_cands[0]
+                elif cert_cands: 
+                    chosen = cert_cands[0]
+            elif rig == "R-221":
+                pref_cands = [p for p in cert_cands if p['Seniority'] == 5]
+                if not pref_cands: 
+                    pref_cands = [p for p in cert_cands if 9 <= p['Seniority'] <= 10]
+                if pref_cands: 
+                    chosen = pref_cands[0]
+                elif cert_cands: 
+                    chosen = cert_cands[0]
         
+        # Failsafe: If no one has the cert checked yet, default to highest seniority
         if not chosen:
             am_pool.sort(key=lambda x: (x["Name"].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "") in partial_leaves, x["Seniority"]))
             chosen = am_pool[0]
@@ -514,7 +536,7 @@ for rig, seats in am_rigs.items():
 structural_pm_pool = [pm_crew_dict[n] for n in pm_names if n not in assigned_pm_names]
 structural_pm_pool.sort(key=lambda x: x["Seniority"])
 
-# 4. Fill Officers from Arrivers (if any vacated)
+# 4. Fill Officers from Arrivers (WITH CERTIFICATION FILTERING)
 for rig, pos in officer_seats:
     if pm_rigs[rig][pos] == "" and structural_pm_pool:
         chosen = None
@@ -522,16 +544,23 @@ for rig, pos in officer_seats:
             cands = [p for p in structural_pm_pool if p['Seniority'] <= 4]
             if cands: 
                 chosen = cands[0]
-        elif rig == "E-221":
-            cands = [p for p in structural_pm_pool if 6 <= p['Seniority'] <= 8]
-            if cands: 
-                chosen = cands[0]
-        elif rig == "R-221":
-            cands = [p for p in structural_pm_pool if p['Seniority'] == 5]
-            if not cands: 
-                cands = [p for p in structural_pm_pool if 9 <= p['Seniority'] <= 10]
-            if cands: 
-                chosen = cands[0]
+        else:
+            cert_cands = [p for p in structural_pm_pool if personnel_info.get(p["Name"].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", ""), {}).get('Officer_1', False)]
+            
+            if rig == "E-221":
+                pref_cands = [p for p in cert_cands if 6 <= p['Seniority'] <= 8]
+                if pref_cands: 
+                    chosen = pref_cands[0]
+                elif cert_cands: 
+                    chosen = cert_cands[0]
+            elif rig == "R-221":
+                pref_cands = [p for p in cert_cands if p['Seniority'] == 5]
+                if not pref_cands: 
+                    pref_cands = [p for p in cert_cands if 9 <= p['Seniority'] <= 10]
+                if pref_cands: 
+                    chosen = pref_cands[0]
+                elif cert_cands: 
+                    chosen = cert_cands[0]
         
         if not chosen:
             structural_pm_pool.sort(key=lambda x: (x["Name"].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "") in partial_leaves, x["Seniority"]))
@@ -745,7 +774,7 @@ if selected_page == "📋 Daily Roster":
     st.divider()
 
     if is_admin:
-        st.markdown("### 🛠️ Shift Finalization")
+        st.markdown("### 🛠️ Shift Finalization & Adjustments")
         rm_col1, rm_col2 = st.columns(2)
         
         if rm_col1.button("🔒 Lock Entire Current Roster", use_container_width=True):
@@ -817,6 +846,41 @@ if selected_page == "📋 Daily Roster":
             st.success("Roster successfully saved to history!")
             time.sleep(1)
             st.rerun()
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("##### 🔧 Quick Manual Overrides")
+        ov_col1, ov_col2 = st.columns([1, 1])
+        with ov_col1:
+            with st.form("override_form", clear_on_submit=True):
+                o_name = st.selectbox("Personnel", on_duty_dropdown_list, key="ov_n")
+                o_seat = st.selectbox("Assign to Seat", all_seats_list, key="ov_s")
+                
+                if st.form_submit_button("Lock Seat Override", type="primary"):
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, o_seat))
+                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
+                    c.execute("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", (target_date_str, o_name, o_seat))
+                    conn.commit()
+                    conn.close()
+                    st.success(f"Locked {o_name} into {o_seat}.")
+                    time.sleep(1)
+                    st.rerun()
+                    
+        with ov_col2:
+            if overrides_df.empty:
+                st.info("No active overrides for this date.")
+            else:
+                for _, ov in overrides_df.iterrows():
+                    with st.container(border=True):
+                        cols = st.columns([4, 1])
+                        cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']}")
+                        if cols[1].button("🗑", key=f"del_ov_{ov['id']}", use_container_width=True):
+                            conn = get_db_connection()
+                            conn.cursor().execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
             
     st.divider()
     day_of_week = target_date.strftime("%A")
@@ -862,43 +926,6 @@ if selected_page == "📋 Daily Roster":
     else:
         st.info(f"No specific station deep-cleaning details are officially assigned for {day_of_week}s.")
 
-    if is_admin:
-        st.divider()
-        st.subheader("🔧 Manual Roster Overrides")
-        ov_col1, ov_col2 = st.columns([1, 1])
-        with ov_col1:
-            with st.form("override_form", clear_on_submit=True):
-                st.markdown(f"**Target Date:** {target_date_str}")
-                o_name = st.selectbox("Personnel", on_duty_dropdown_list, key="ov_n")
-                o_seat = st.selectbox("Assign to Seat", all_seats_list, key="ov_s")
-                
-                if st.form_submit_button("Lock Seat Override", type="primary"):
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, o_seat))
-                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
-                    c.execute("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", (target_date_str, o_name, o_seat))
-                    conn.commit()
-                    conn.close()
-                    st.success(f"Locked {o_name} into {o_seat}.")
-                    time.sleep(1)
-                    st.rerun()
-                    
-        with ov_col2:
-            st.markdown(f"**Active Overrides for Selected Date ({target_date_str}):**")
-            if overrides_df.empty:
-                st.info("No active overrides for this date.")
-            else:
-                for _, ov in overrides_df.iterrows():
-                    with st.container(border=True):
-                        cols = st.columns([4, 1])
-                        cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']}")
-                        if cols[1].button("🗑", key=f"del_ov_{ov['id']}", use_container_width=True):
-                            conn = get_db_connection()
-                            conn.cursor().execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
-                            conn.commit()
-                            conn.close()
-                            st.rerun()
 
 # ==========================================
 # PAGE 2: OVERTIME ROSTER
@@ -1370,7 +1397,7 @@ elif selected_page == "📊 Seat Statistics":
 elif selected_page == "✍️ Data Entry" and is_admin:
     st.subheader("✍️ Data Entry & Roster Management")
     
-    de_tabs = st.tabs(["🏖️ Leave", "💰 Overtime", "🔀 Shift Trades", "🚒 Shift Roster", "⏱️ OT Canvass List", "💾 Backups"])
+    de_tabs = st.tabs(["🏖️ Leave", "💰 Overtime", "🔀 Shift Trades", "🚒 Shift Roster", "⏱️ OT Canvass List"])
     
     # ----------------------------------------
     # TAB 1: ENTER LEAVE
@@ -1510,7 +1537,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
         st.markdown("#### 🚒 Primary Shift Roster (`Personnel`)")
         st.caption("Controls Daily Roster, Leave Calendar, and Apparatus Seats. Seniority 1–4 = AC, 5 = Admin Capt, 6–8 = Station Capt, 9–10 = Lt, 11+ = Firefighter.")
         
-        edit_p_df = all_personnel_df[['seniority', 'name', 'shift', 'schedule', 'core_manning']].sort_values(by='seniority').reset_index(drop=True)
+        edit_p_df = all_personnel_df[['seniority', 'name', 'shift', 'schedule', 'core_manning', 'officer_1', 'officer_2', 'inspector', 'instructor']].sort_values(by='seniority').reset_index(drop=True)
         p_grid_height = (len(edit_p_df) * 35) + 80
         
         updated_p_df = st.data_editor(
@@ -1521,11 +1548,15 @@ elif selected_page == "✍️ Data Entry" and is_admin:
             height=p_grid_height,
             key="editor_primary_personnel",
             column_config={
-                "seniority": st.column_config.NumberColumn("Seniority", min_value=1, max_value=200, step=1, required=True, default=36),
-                "name": st.column_config.TextColumn("Roster Name (Last Name)", required=True),
+                "seniority": st.column_config.NumberColumn("Sen.", min_value=1, max_value=200, step=1, required=True, default=36),
+                "name": st.column_config.TextColumn("Roster Name", required=True),
                 "shift": st.column_config.SelectboxColumn("Shift", options=["A", "B", "C", "ADMIN"], required=True, default="A"),
                 "schedule": st.column_config.SelectboxColumn("Schedule", options=["Structural", "Admin"], required=True, default="Structural"),
-                "core_manning": st.column_config.CheckboxColumn("Core Manning", default=True)
+                "core_manning": st.column_config.CheckboxColumn("Core", default=True),
+                "officer_1": st.column_config.CheckboxColumn("Off 1", default=False),
+                "officer_2": st.column_config.CheckboxColumn("Off 2", default=False),
+                "inspector": st.column_config.CheckboxColumn("Insp.", default=False),
+                "instructor": st.column_config.CheckboxColumn("Inst.", default=False)
             }
         )
         
@@ -1537,18 +1568,22 @@ elif selected_page == "✍️ Data Entry" and is_admin:
             clean_p['shift'] = clean_p['shift'].fillna("A")
             clean_p['schedule'] = clean_p['schedule'].fillna("Structural")
             clean_p['core_manning'] = clean_p['core_manning'].fillna(True).astype(bool)
+            clean_p['officer_1'] = clean_p['officer_1'].fillna(False).astype(bool)
+            clean_p['officer_2'] = clean_p['officer_2'].fillna(False).astype(bool)
+            clean_p['inspector'] = clean_p['inspector'].fillna(False).astype(bool)
+            clean_p['instructor'] = clean_p['instructor'].fillna(False).astype(bool)
             
             conn = get_db_connection()
             c = conn.cursor()
             try:
                 c.execute("DELETE FROM Personnel")
                 p_records = [
-                    (r['name'], int(r['seniority']), bool(r['core_manning']), r['schedule'], r['shift'])
+                    (r['name'], int(r['seniority']), bool(r['core_manning']), r['schedule'], r['shift'], bool(r['officer_1']), bool(r['officer_2']), bool(r['inspector']), bool(r['instructor']))
                     for _, r in clean_p.iterrows()
                 ]
                 if p_records:
                     c.executemany(
-                        "INSERT INTO Personnel (Name, Seniority, Core_Manning, Schedule, Shift) VALUES (%s, %s, %s, %s, %s)",
+                        "INSERT INTO Personnel (Name, Seniority, Core_Manning, Schedule, Shift, Officer_1, Officer_2, Inspector, Instructor) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                         p_records
                     )
                 conn.commit()
@@ -1624,109 +1659,3 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 conn.rollback()
                 conn.close()
                 st.error(f"Error saving Overtime List: {e}")
-
-    # ----------------------------------------
-    # TAB 6: DATABASE BACKUPS
-    # ----------------------------------------
-    with de_tabs[5]:
-        st.subheader("💾 Database Backups & Disaster Recovery")
-        st.markdown("Download a full snapshot of all active tables, or restore the database from a previously downloaded snapshot.")
-
-        bak_col1, bak_col2 = st.columns(2)
-
-        # --- EXPORT SNAPSHOT ---
-        with bak_col1:
-            st.markdown("#### 📤 Export Backup")
-            st.caption("Creates an Excel workbook containing a complete snapshot of every database table.")
-            
-            if st.button("Generate Backup File", use_container_width=True):
-                conn = get_db_connection()
-                table_queries = {
-                    "Personnel": "SELECT name, seniority, core_manning, schedule, shift FROM Personnel",
-                    "Overtime_Buckets": "SELECT name, seniority, shift, current_hours, contact FROM Overtime_Buckets",
-                    "Leave_Ledger": "SELECT id, target_date, name, leave_type, start_time, end_time, total_hours FROM Leave_Ledger",
-                    "Overtime_Log": "SELECT id, target_date, name, ot_type, start_time, end_time, total_hours FROM Overtime_Log",
-                    "Shift_Trades_V3": "SELECT id, date_1, name_1, date_2, name_2, start_time, end_time, total_hours FROM Shift_Trades_V3",
-                    "Position_Log": "SELECT id, target_date, name, position, hours FROM Position_Log",
-                    "OT_Archive": "SELECT id, archive_stamp, notes, name, start_hours, hours_applied, status FROM OT_Archive",
-                    "ARO_Watch": "SELECT id, target_date, watch_period, name FROM ARO_Watch",
-                    "Manual_Overrides": "SELECT id, target_date, name, seat FROM Manual_Overrides",
-                    "Station_Events": "SELECT id, target_date, event_type, description, start_time, end_time, instructor FROM Station_Events"
-                }
-                
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    for t_name, q in table_queries.items():
-                        df = pd.read_sql(q, conn)
-                        df.to_excel(writer, sheet_name=t_name, index=False)
-                conn.close()
-                
-                snap_time = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-                st.download_button(
-                    label=f"⬇️ Download Snapshot ({snap_time}.xlsx)",
-                    data=output.getvalue(),
-                    file_name=f"RFD_Roster_Backup_{snap_time}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary",
-                    use_container_width=True
-                )
-
-        # --- RESTORE SNAPSHOT ---
-        with bak_col2:
-            st.markdown("#### 📥 Restore from Backup")
-            st.caption("Upload a verified snapshot file to completely reset the database to that moment in time.")
-            
-            uploaded_backup = st.file_uploader("Upload Backup Excel File", type=["xlsx"], key="restore_file")
-            
-            if uploaded_backup is not None:
-                st.warning("⚠️ Restoring will overwrite all current data with the contents of this file.")
-                if st.button("🚨 Overwrite & Restore Database", type="primary", use_container_width=True):
-                    try:
-                        excel_file = pd.ExcelFile(uploaded_backup)
-                        
-                        core_sheets = [
-                            "Personnel", "Overtime_Buckets", "Leave_Ledger", 
-                            "Overtime_Log", "Shift_Trades_V3", "Position_Log", 
-                            "OT_Archive", "ARO_Watch", "Manual_Overrides"
-                        ]
-                        
-                        missing_core = [s for s in core_sheets if s not in excel_file.sheet_names]
-                        if missing_core:
-                            st.error(f"Invalid backup file! Missing required sheets: {', '.join(missing_core)}")
-                        else:
-                            conn = get_db_connection()
-                            c = conn.cursor()
-                            
-                            all_possible_sheets = core_sheets + ["Station_Events"]
-                            
-                            for t in reversed(all_possible_sheets):
-                                if t in excel_file.sheet_names:
-                                    c.execute(f"DELETE FROM {t};")
-                                    
-                            for t in all_possible_sheets:
-                                if t in excel_file.sheet_names:
-                                    df = pd.read_excel(excel_file, sheet_name=t)
-                                    df = df.where(pd.notnull(df), None)
-                                    
-                                    if not df.empty:
-                                        cols = list(df.columns)
-                                        col_str = ", ".join(cols)
-                                        val_placeholders = ", ".join(["%s"] * len(cols))
-                                        query = f"INSERT INTO {t} ({col_str}) VALUES ({val_placeholders})"
-                                        
-                                        records = [tuple(row) for row in df.to_numpy()]
-                                        c.executemany(query, records)
-                                        
-                                    if "id" in [col.lower() for col in df.columns]:
-                                        c.execute(f"SELECT setval(pg_get_serial_sequence('{t}', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM {t};")
-                            
-                            conn.commit()
-                            conn.close()
-                            st.success("✅ Database successfully restored to snapshot state!")
-                            time.sleep(2)
-                            st.rerun()
-                    except Exception as e:
-                        if 'conn' in locals() and conn:
-                            conn.rollback()
-                            conn.close()
-                        st.error(f"Restore failed: {e}")
