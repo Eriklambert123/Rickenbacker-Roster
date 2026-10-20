@@ -153,6 +153,13 @@ c.execute('''CREATE TABLE IF NOT EXISTS Station_Events (id SERIAL PRIMARY KEY, T
 c.execute('''CREATE TABLE IF NOT EXISTS Overtime_Buckets (Name TEXT PRIMARY KEY, Seniority INTEGER, Shift TEXT, Current_Hours REAL, Contact TEXT)''')
 c.execute('''CREATE TABLE IF NOT EXISTS OT_Archive (id SERIAL PRIMARY KEY, Archive_Stamp TEXT, Notes TEXT, Name TEXT, Start_Hours REAL, Hours_Applied REAL, Status TEXT)''')
 
+# Safely apply database schema updates (Adds Certification Tracking)
+c.execute('''ALTER TABLE Station_Events ADD COLUMN IF NOT EXISTS Instructor TEXT''')
+c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_1 BOOLEAN DEFAULT FALSE''')
+c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_2 BOOLEAN DEFAULT FALSE''')
+c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Inspector BOOLEAN DEFAULT FALSE''')
+c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Instructor BOOLEAN DEFAULT FALSE''')
+
 # Auto-Seed Primary Roster if Blank
 c.execute("SELECT COUNT(*) FROM Personnel")
 if c.fetchone()[0] == 0:
@@ -795,6 +802,39 @@ excluded_watches = {
 
 eligible_aro_names = sorted([name for name in all_on_duty if name not in excluded_watches and name not in ["", "VACANT"]])
 
+# --- EXACT SWAP TIME ENGINE ---
+def get_transition_time(am_full, pm_full):
+    am_n = am_full.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "") if am_full else ""
+    pm_n = pm_full.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "") if pm_full else ""
+    
+    t_time = "1500" # Default
+    
+    if pm_n and pm_n != "VACANT":
+        if not ot_df.empty:
+            for _, r in ot_df[ot_df['name'] == pm_n].iterrows():
+                if r['start_time'].replace(":", "") != "0700": t_time = r['start_time']
+        if not all_trades_df.empty:
+            for _, r in all_trades_df[((all_trades_df['date_1'] == target_date_str) & (all_trades_df['name_2'] == pm_n)) | ((all_trades_df['date_2'] == target_date_str) & (all_trades_df['name_1'] == pm_n))].iterrows():
+                if r['start_time'].replace(":", "") != "0700": t_time = r['start_time']
+        if not leave_df.empty:
+            for _, r in leave_df[leave_df['name'] == pm_n].iterrows():
+                if r['start_time'].replace(":", "") == "0700" and float(r['total_hours']) < 24: t_time = r['end_time']
+                
+    if am_n and am_n != "VACANT":
+        if not leave_df.empty:
+            for _, r in leave_df[leave_df['name'] == am_n].iterrows():
+                if r['start_time'].replace(":", "") != "0700": t_time = r['start_time']
+        if not all_trades_df.empty:
+            for _, r in all_trades_df[((all_trades_df['date_1'] == target_date_str) & (all_trades_df['name_1'] == am_n)) | ((all_trades_df['date_2'] == target_date_str) & (all_trades_df['name_2'] == am_n))].iterrows():
+                if r['start_time'].replace(":", "") != "0700": t_time = r['start_time']
+        if not ot_df.empty:
+            for _, r in ot_df[ot_df['name'] == am_n].iterrows():
+                if r['end_time'].replace(":", "") != "0700" and float(r['total_hours']) < 24: t_time = r['end_time']
+                
+    t_time = str(t_time).replace(":", "").strip()
+    if len(t_time) == 3: t_time = "0" + t_time
+    return t_time
+
 
 # --- 4. STREAMLIT VISUALS & PAGES ---
 st.title("🚒 Rickenbacker Fire Department Management")
@@ -842,7 +882,9 @@ if selected_page == "📋 Daily Roster":
                 elif am_name == pm_name: 
                     disp_text = f"**{position}:** {am_name}"
                 else: 
-                    disp_text = f"**{position}:** {am_name}  >>  {pm_name} (1500)"
+                    # --- Exact Swap Time Fix Applied Here ---
+                    swap_time = get_transition_time(am_name, pm_name)
+                    disp_text = f"**{position}:** {am_name}  >>  {pm_name} ({swap_time})"
 
                 seat_name = f"{rig_name} | {position}"
                 is_locked = seat_name in seat_to_override
@@ -969,12 +1011,17 @@ if selected_page == "📋 Daily Roster":
                         if clean_name != "VACANT": 
                             records.append((target_date_str, clean_name, seat_name, 24.0))
                     else:
+                        # Ensure history logs match exact time modifiers
+                        t_time = get_transition_time(am_name, pm_name)
+                        am_hrs = time_to_shift_hr(t_time)
+                        pm_hrs = 24.0 - am_hrs
+                        
                         if am_name and am_name != "VACANT":
                             clean_am = am_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
-                            records.append((target_date_str, clean_am, seat_name, 8.0))
+                            records.append((target_date_str, clean_am, seat_name, round(am_hrs, 1)))
                         if pm_name and pm_name != "VACANT":
                             clean_pm = pm_name.replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
-                            records.append((target_date_str, clean_pm, seat_name, 16.0))
+                            records.append((target_date_str, clean_pm, seat_name, round(pm_hrs, 1)))
             
             am_float = am_roster["ARO"]["0700-1200 (Float)"]
             if am_float and am_float != "VACANT":
