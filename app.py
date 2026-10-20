@@ -738,7 +738,7 @@ while max(shortage) > 0:
     hrs = (end_idx - start_idx) * 0.1
     ot_shifts.append((hrs, start_idx, end_idx))
     
-# 6. Formatting Shortages
+# 6. Formatting Shortages (New Clean List Display)
 def format_shift_time(idx):
     decimal_hr = idx * 0.1
     real_hr = decimal_hr + 7.0
@@ -760,19 +760,24 @@ for hrs, s_idx, e_idx in ot_shifts:
     key = (hrs_int, s_time, e_time)
     shift_counts[key] = shift_counts.get(key, 0) + 1
     
-ot_main = []
-ot_sub = []
-
+ot_sub_list = []
+total_ot_needed_count = 0
 sorted_keys = sorted(shift_counts.keys(), key=lambda x: (-x[0], x[1]))
 
 for k in sorted_keys:
     hrs_int, s_time, e_time = k
     count = shift_counts[k]
-    ot_main.append(f"{count}x {hrs_int}h")
-    ot_sub.append(f"{count} @ {s_time}-{e_time}")
-    
-ot_needed_disp = " + ".join(ot_main) if ot_main else "0 Shifts"
-ot_needed_sub = ", ".join(ot_sub) if ot_sub else "Fully Staffed"
+    total_ot_needed_count += count
+    for _ in range(count):
+        ot_sub_list.append(f"⚠️ {s_time}-{e_time} ({hrs_int}h)")
+
+scheduled_ot_list = []
+if not ot_df.empty:
+    for _, o in ot_df.iterrows():
+        hrs = int(o['total_hours']) if o['total_hours'] % 1 == 0 else o['total_hours']
+        clean_name = o['name'].replace(" (Trade)", "").replace(" (OT)", "").replace(" (Guard)", "")
+        scheduled_ot_list.append(f"✅ {clean_name}: {o['start_time']}-{o['end_time']} ({hrs}h)")
+
 
 # --- Roster Formatting ---
 total_on_duty_am = len(am_crew)
@@ -806,9 +811,22 @@ st.title("🚒 Rickenbacker Fire Department Management")
 # ==========================================
 if selected_page == "📋 Daily Roster":
     col1, col2, col3 = st.columns(3)
-    col1.metric("Total On-Duty (0700 / 1500)", manning_disp)
-    col2.metric("Overtime Needed", ot_needed_disp, ot_needed_sub, delta_color="off")
-    col3.metric("Scheduled OT", f"{len(ot_df)} Slots")
+    
+    with col1:
+        st.metric("Total On-Duty (0700 / 1500)", manning_disp)
+        
+    with col2:
+        st.metric("Overtime Needed", f"{total_ot_needed_count} Shifts")
+        if total_ot_needed_count > 0:
+            st.markdown(f"<div style='font-size: 0.85em; color: #d32f2f; line-height: 1.4; margin-top: -10px;'>{'<br>'.join(ot_sub_list)}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='font-size: 0.85em; color: #2e7d32; margin-top: -10px;'>Fully Staffed</div>", unsafe_allow_html=True)
+            
+    with col3:
+        st.metric("Scheduled OT", f"{len(ot_df)} Filled")
+        if not ot_df.empty:
+            st.markdown(f"<div style='font-size: 0.85em; color: #1565C0; line-height: 1.4; margin-top: -10px;'>{'<br>'.join(scheduled_ot_list)}</div>", unsafe_allow_html=True)
+            
     st.divider()
     rig_col1, rig_col2, rig_col3 = st.columns(3)
 
