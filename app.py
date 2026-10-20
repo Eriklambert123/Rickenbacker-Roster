@@ -44,6 +44,19 @@ def get_icon(entry_type):
     }
     return icons.get(entry_type, "📌")
 
+def time_to_shift_hr(t_str):
+    try:
+        t_str = str(t_str).replace(":", "").strip()
+        if len(t_str) == 3: t_str = "0" + t_str
+        if len(t_str) < 4: return 0.0
+        h = int(t_str[:2])
+        m = int(t_str[2:])
+        val = h + (m / 60.0)
+        if val < 7.0: val += 24.0
+        return val - 7.0
+    except: 
+        return 0.0
+
 def calc_hours(start_str, end_str):
     try:
         s, e = int(start_str.replace(":", "")), int(end_str.replace(":", ""))
@@ -629,6 +642,139 @@ def apply_cross_staffing_and_watches(rigs):
 am_roster = apply_cross_staffing_and_watches(am_rigs)
 pm_roster = apply_cross_staffing_and_watches(pm_rigs)
 
+# --- OT Shortage Calculation Engine (Skyline Decomposition) ---
+headcount = [0] * 240
+
+# 1. Base presence from permanent roster
+for _, p in all_personnel_df.iterrows():
+    name = p['name']
+    sched = p['schedule']
+    p_shift = p['shift']
+    
+    presence = [0] * 240
+    
+    if p_shift == db_shift:
+        presence = [1] * 240
+    elif sched == 'Admin' and target_date.weekday() < 5:
+        if name == 'Garver' and target_date.weekday() == 2: 
+            presence = [1] * 240
+        elif name == 'McNamara' and target_date.weekday() == 1: 
+            presence = [1] * 240
+        else:
+            for i in range(80): presence[i] = 1 # 0700-1500
+            
+    # 2. Subtract Leaves & Trades Off
+    p_leaves = all_leave_df[(all_leave_df['target_date'] == target_date_str) & (all_leave_df['name'] == name)]
+    for _, l in p_leaves.iterrows():
+        s_idx = int(round(time_to_shift_hr(l['start_time']) * 10))
+        e_idx = int(round(time_to_shift_hr(l['end_time']) * 10))
+        if float(l['total_hours']) >= 24: 
+            s_idx, e_idx = 0, 240
+        elif e_idx <= s_idx: 
+            e_idx += 240
+        for i in range(s_idx, min(240, e_idx)): presence[i] = 0
+        
+    p_trades_off_1 = all_trades_df[(all_trades_df['date_1'] == target_date_str) & (all_trades_df['name_1'] == name)]
+    for _, t in p_trades_off_1.iterrows():
+        s_idx = int(round(time_to_shift_hr(t['start_time']) * 10))
+        e_idx = int(round(time_to_shift_hr(t['end_time']) * 10))
+        if float(t['total_hours']) >= 24: s_idx, e_idx = 0, 240
+        elif e_idx <= s_idx: e_idx += 240
+        for i in range(s_idx, min(240, e_idx)): presence[i] = 0
+        
+    p_trades_off_2 = all_trades_df[(all_trades_df['date_2'] == target_date_str) & (all_trades_df['name_2'] == name)]
+    for _, t in p_trades_off_2.iterrows():
+        s_idx = int(round(time_to_shift_hr(t['start_time']) * 10))
+        e_idx = int(round(time_to_shift_hr(t['end_time']) * 10))
+        if float(t['total_hours']) >= 24: s_idx, e_idx = 0, 240
+        elif e_idx <= s_idx: e_idx += 240
+        for i in range(s_idx, min(240, e_idx)): presence[i] = 0
+        
+    for i in range(240): headcount[i] += presence[i]
+    
+# 3. Add Trades Working
+for _, t in all_trades_df[(all_trades_df['date_1'] == target_date_str)].iterrows():
+    s_idx = int(round(time_to_shift_hr(t['start_time']) * 10))
+    e_idx = int(round(time_to_shift_hr(t['end_time']) * 10))
+    if float(t['total_hours']) >= 24: s_idx, e_idx = 0, 240
+    elif e_idx <= s_idx: e_idx += 240
+    for i in range(s_idx, min(240, e_idx)): headcount[i] += 1
+    
+for _, t in all_trades_df[(all_trades_df['date_2'] == target_date_str)].iterrows():
+    s_idx = int(round(time_to_shift_hr(t['start_time']) * 10))
+    e_idx = int(round(time_to_shift_hr(t['end_time']) * 10))
+    if float(t['total_hours']) >= 24: s_idx, e_idx = 0, 240
+    elif e_idx <= s_idx: e_idx += 240
+    for i in range(s_idx, min(240, e_idx)): headcount[i] += 1
+    
+# 4. Add OT Working
+for _, o in all_ot_df[(all_ot_df['target_date'] == target_date_str)].iterrows():
+    s_idx = int(round(time_to_shift_hr(o['start_time']) * 10))
+    e_idx = int(round(time_to_shift_hr(o['end_time']) * 10))
+    if float(o['total_hours']) >= 24: s_idx, e_idx = 0, 240
+    elif e_idx <= s_idx: e_idx += 240
+    for i in range(s_idx, min(240, e_idx)): headcount[i] += 1
+
+# 5. Skyline algorithm for shortage decomposition
+shortage = [0] * 240
+for i in range(240):
+    shortage[i] = max(0, 9 - headcount[i])
+    
+ot_shifts = []
+while max(shortage) > 0:
+    start_idx = -1
+    for i in range(240):
+        if shortage[i] > 0:
+            start_idx = i
+            break
+    
+    end_idx = start_idx
+    while end_idx < 240 and shortage[end_idx] > 0:
+        end_idx += 1
+        
+    for i in range(start_idx, end_idx):
+        shortage[i] -= 1
+        
+    hrs = (end_idx - start_idx) * 0.1
+    ot_shifts.append((hrs, start_idx, end_idx))
+    
+# 6. Formatting Shortages
+def format_shift_time(idx):
+    decimal_hr = idx * 0.1
+    real_hr = decimal_hr + 7.0
+    if real_hr >= 24.0: real_hr -= 24.0
+    h = int(real_hr)
+    m = int(round((real_hr - h) * 60))
+    if m == 60:
+        h += 1
+        m = 0
+    if h == 24: h = 0
+    return f"{h:02d}{m:02d}"
+
+shift_counts = {}
+for hrs, s_idx, e_idx in ot_shifts:
+    hrs_int = int(hrs) if hrs % 1 == 0 else round(hrs, 1)
+    s_time = format_shift_time(s_idx)
+    e_time = format_shift_time(e_idx)
+    
+    key = (hrs_int, s_time, e_time)
+    shift_counts[key] = shift_counts.get(key, 0) + 1
+    
+ot_main = []
+ot_sub = []
+
+sorted_keys = sorted(shift_counts.keys(), key=lambda x: (-x[0], x[1]))
+
+for k in sorted_keys:
+    hrs_int, s_time, e_time = k
+    count = shift_counts[k]
+    ot_main.append(f"{count}x {hrs_int}h")
+    ot_sub.append(f"{count} @ {s_time}-{e_time}")
+    
+ot_needed_disp = " + ".join(ot_main) if ot_main else "0 Shifts"
+ot_needed_sub = ", ".join(ot_sub) if ot_sub else "Fully Staffed"
+
+# --- Roster Formatting ---
 total_on_duty_am = len(am_crew)
 total_on_duty_pm = len(pm_crew)
 
@@ -636,30 +782,6 @@ if total_on_duty_am == total_on_duty_pm:
     manning_disp = str(total_on_duty_am)
 else:
     manning_disp = f"{total_on_duty_am} ➔ {total_on_duty_pm}"
-
-# --- OT Shortage Calculation ---
-short_am = max(0, 9 - total_on_duty_am)
-short_pm = max(0, 9 - total_on_duty_pm)
-
-full_shifts = min(short_am, short_pm)
-am_only = short_am - full_shifts
-pm_only = short_pm - full_shifts
-
-ot_main = []
-ot_sub = []
-if full_shifts > 0:
-    ot_main.append(f"{full_shifts}x 24h")
-    ot_sub.append(f"{full_shifts} @ 0700-0700")
-if am_only > 0:
-    ot_main.append(f"{am_only}x 8h")
-    ot_sub.append(f"{am_only} @ 0700-1500")
-if pm_only > 0:
-    ot_main.append(f"{pm_only}x 16h")
-    ot_sub.append(f"{pm_only} @ 1500-0700")
-    
-ot_needed_disp = " + ".join(ot_main) if ot_main else "0 Shifts"
-ot_needed_sub = ", ".join(ot_sub) if ot_sub else "Fully Staffed"
-
 
 all_on_duty = set([p["Name"] for p in am_crew] + [p["Name"] for p in pm_crew])
 
