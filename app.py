@@ -169,6 +169,14 @@ c.execute('''CREATE TABLE IF NOT EXISTS Station_Events (id SERIAL PRIMARY KEY, T
 c.execute('''CREATE TABLE IF NOT EXISTS Overtime_Buckets (Name TEXT PRIMARY KEY, Seniority INTEGER, Shift TEXT, Current_Hours REAL, Contact TEXT)''')
 c.execute('''CREATE TABLE IF NOT EXISTS OT_Archive (id SERIAL PRIMARY KEY, Archive_Stamp TEXT, Notes TEXT, Name TEXT, Start_Hours REAL, Hours_Applied REAL, Status TEXT)''')
 
+# Safely apply database schema updates (Adds Certifications & Hire Date Tracking)
+c.execute('''ALTER TABLE Station_Events ADD COLUMN IF NOT EXISTS Instructor TEXT''')
+c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_1 BOOLEAN DEFAULT FALSE''')
+c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_2 BOOLEAN DEFAULT FALSE''')
+c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Inspector BOOLEAN DEFAULT FALSE''')
+c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Instructor BOOLEAN DEFAULT FALSE''')
+c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Hire_Date TEXT DEFAULT '2020-01-01' ''')
+
 # Auto-Seed Primary Roster if Blank
 c.execute("SELECT COUNT(*) FROM Personnel")
 if c.fetchone()[0] == 0:
@@ -209,6 +217,7 @@ conn.commit()
 # Read Data & Standardize Column Names to Lowercase
 all_personnel_df = pd.read_sql("SELECT * FROM Personnel", conn)
 all_personnel_df.columns = [c.lower() for c in all_personnel_df.columns]
+all_personnel_df['hire_date'] = all_personnel_df['hire_date'].fillna('2020-01-01')
 
 all_leave_df = pd.read_sql("SELECT * FROM Leave_Ledger", conn)
 if not all_leave_df.empty: 
@@ -253,6 +262,32 @@ else:
     events_df = pd.DataFrame(columns=["id", "target_date", "event_type", "description", "start_time", "end_time", "instructor"])
 
 conn.close()
+
+# --- AUTO SHIFT-UP ENGINE ---
+def recalculate_ff_seniority():
+    """Automatically sorts firefighters by Hire Date and shifts them up to close any gaps."""
+    conn_rec = get_db_connection()
+    df_rec = pd.read_sql("SELECT * FROM Personnel", conn_rec)
+    df_rec['Hire_Date'] = df_rec['Hire_Date'].fillna('2020-01-01')
+    
+    # 1-10 are explicitly reserved for Officers
+    officers = df_rec[df_rec['Seniority'] <= 10].copy()
+    ffs = df_rec[df_rec['Seniority'] > 10].copy()
+    
+    # Sort Firefighters by Hire Date (and maintain old seniority as tie breaker)
+    ffs = ffs.sort_values(by=['Hire_Date', 'Seniority'])
+    
+    updates = []
+    current_sen = 11
+    for _, row in ffs.iterrows():
+        updates.append((current_sen, row['Name']))
+        current_sen += 1
+        
+    if updates:
+        cur = conn_rec.cursor()
+        cur.executemany("UPDATE Personnel SET Seniority = %s WHERE Name = %s", updates)
+        conn_rec.commit()
+    conn_rec.close()
 
 personnel_info = {}
 admin_names = set()
@@ -659,7 +694,12 @@ for _, p in all_personnel_df.iterrows():
     name = p['name']
     sched = p['schedule']
     p_shift = p['shift']
+    is_core = p.get('core_manning', True)
     
+    # Recruits or personnel marked as NOT Core Manning will not count towards minimums here
+    if not is_core: 
+        continue
+        
     presence = [0] * 240
     
     if p_shift == db_shift:
@@ -1743,66 +1783,107 @@ elif selected_page == "✍️ Data Entry" and is_admin:
     # ----------------------------------------
     with de_tabs[3]:
         st.markdown("#### 🚒 Primary Shift Roster (`Personnel`)")
-        st.caption("Controls Daily Roster, Leave Calendar, and Apparatus Seats. Seniority 1–4 = AC, 5 = Admin Capt, 6–8 = Station Capt, 9–10 = Lt, 11+ = Firefighter.")
+        st.caption("Seniority 1-10 are reserved for Officers. Firefighters (11+) are automatically sorted and shifted up based on Hire Date.")
         
-        edit_p_df = all_personnel_df[['seniority', 'name', 'shift', 'schedule', 'core_manning', 'officer_1', 'officer_2', 'inspector', 'instructor']].sort_values(by='seniority').reset_index(drop=True)
-        p_grid_height = (len(edit_p_df) * 35) + 80
+        display_df = all_personnel_df.copy()
+        display_cols = ['seniority', 'name', 'shift', 'schedule', 'hire_date', 'core_manning', 'officer_1', 'officer_2', 'inspector', 'instructor']
+        for c_name in display_cols:
+            if c_name not in display_df.columns:
+                display_df[c_name] = None
+                
+        display_df = display_df[display_cols].sort_values(by='seniority').reset_index(drop=True)
+        st.dataframe(display_df, use_container_width=True, hide_index=True, height=300)
         
-        updated_p_df = st.data_editor(
-            edit_p_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            hide_index=True,
-            height=p_grid_height,
-            key="editor_primary_personnel",
-            column_config={
-                "seniority": st.column_config.NumberColumn("Sen.", min_value=1, max_value=200, step=1, required=True, default=36),
-                "name": st.column_config.TextColumn("Roster Name", required=True),
-                "shift": st.column_config.SelectboxColumn("Shift", options=["A", "B", "C", "ADMIN"], required=True, default="A"),
-                "schedule": st.column_config.SelectboxColumn("Schedule", options=["Structural", "Admin"], required=True, default="Structural"),
-                "core_manning": st.column_config.CheckboxColumn("Core", default=True),
-                "officer_1": st.column_config.CheckboxColumn("Off 1", default=False),
-                "officer_2": st.column_config.CheckboxColumn("Off 2", default=False),
-                "inspector": st.column_config.CheckboxColumn("Insp.", default=False),
-                "instructor": st.column_config.CheckboxColumn("Inst.", default=False)
-            }
-        )
+        st.divider()
+        col_add, col_edit = st.columns(2)
         
-        if st.button("💾 Save Primary Roster Changes", type="primary", use_container_width=True):
-            clean_p = updated_p_df.dropna(subset=['name']).copy()
-            clean_p['name'] = clean_p['name'].astype(str).str.strip()
-            clean_p = clean_p[clean_p['name'] != ""]
-            clean_p['seniority'] = pd.to_numeric(clean_p['seniority'], errors='coerce').fillna(99).astype(int)
-            clean_p['shift'] = clean_p['shift'].fillna("A")
-            clean_p['schedule'] = clean_p['schedule'].fillna("Structural")
-            clean_p['core_manning'] = clean_p['core_manning'].fillna(True).astype(bool)
-            clean_p['officer_1'] = clean_p['officer_1'].fillna(False).astype(bool)
-            clean_p['officer_2'] = clean_p['officer_2'].fillna(False).astype(bool)
-            clean_p['inspector'] = clean_p['inspector'].fillna(False).astype(bool)
-            clean_p['instructor'] = clean_p['instructor'].fillna(False).astype(bool)
+        with col_add:
+            st.markdown("##### ➕ Add New Personnel")
+            with st.form("add_personnel_form", clear_on_submit=True):
+                a_name = st.text_input("Name (Last Name)")
+                a_hire = st.date_input("Hire Date / Seniority Date", datetime.date.today())
+                a_shift = st.selectbox("Shift", ["A", "B", "C", "ADMIN"])
+                a_sched = st.selectbox("Schedule", ["Structural", "Admin"])
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                a_core = st.checkbox("Counts Towards Minimum Manning (Core)", value=False, help="Uncheck this for recruits so they do not count towards the 9-person minimum.")
+                
+                st.markdown("**Certifications**")
+                c1, c2, c3, c4 = st.columns(4)
+                a_off1 = c1.checkbox("Officer 1")
+                a_off2 = c2.checkbox("Officer 2")
+                a_insp = c3.checkbox("Inspector")
+                a_inst = c4.checkbox("Instructor")
+                
+                if st.form_submit_button("Add Personnel", type="primary"):
+                    if not a_name.strip():
+                        st.error("Name is required.")
+                    else:
+                        conn = get_db_connection()
+                        c = conn.cursor()
+                        # Temp seniority (999), will be auto-sorted and shifted up instantly
+                        c.execute("INSERT INTO Personnel (Name, Seniority, Core_Manning, Schedule, Shift, Officer_1, Officer_2, Inspector, Instructor, Hire_Date) VALUES (%s, 999, %s, %s, %s, %s, %s, %s, %s, %s)", (a_name.strip(), a_core, a_sched, a_shift, a_off1, a_off2, a_insp, a_inst, a_hire.strftime("%Y-%m-%d")))
+                        conn.commit()
+                        conn.close()
+                        
+                        recalculate_ff_seniority()
+                        st.success(f"{a_name} added successfully! Seniority auto-adjusted.")
+                        time.sleep(1)
+                        st.rerun()
+
+        with col_edit:
+            st.markdown("##### ✏️ Edit or Remove Personnel")
+            edit_target = st.selectbox("Select Personnel to Edit", ["-- Select --"] + all_names)
             
-            conn = get_db_connection()
-            c = conn.cursor()
-            try:
-                c.execute("DELETE FROM Personnel")
-                p_records = [
-                    (r['name'], int(r['seniority']), bool(r['core_manning']), r['schedule'], r['shift'], bool(r['officer_1']), bool(r['officer_2']), bool(r['inspector']), bool(r['instructor']))
-                    for _, r in clean_p.iterrows()
-                ]
-                if p_records:
-                    c.executemany(
-                        "INSERT INTO Personnel (Name, Seniority, Core_Manning, Schedule, Shift, Officer_1, Officer_2, Inspector, Instructor) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                        p_records
-                    )
-                conn.commit()
-                conn.close()
-                st.success("✅ Primary Shift Roster updated!")
-                time.sleep(1)
-                st.rerun()
-            except Exception as e:
-                conn.rollback()
-                conn.close()
-                st.error(f"Error saving Primary Roster: {e}")
+            if edit_target != "-- Select --":
+                target_data = all_personnel_df[all_personnel_df['name'] == edit_target].iloc[0]
+                
+                try:
+                    curr_hire = datetime.datetime.strptime(target_data.get('hire_date', '2020-01-01'), "%Y-%m-%d").date()
+                except:
+                    curr_hire = datetime.date(2020, 1, 1)
+                    
+                with st.form("edit_personnel_form"):
+                    e_sen = st.number_input("Seniority Number (1-10 for Officers)", min_value=1, value=int(target_data['seniority']), help="Leave firefighters >10 alone. The system will auto-sort them.")
+                    e_hire = st.date_input("Hire Date", value=curr_hire)
+                    e_shift = st.selectbox("Shift", ["A", "B", "C", "ADMIN"], index=["A", "B", "C", "ADMIN"].index(target_data['shift']))
+                    e_sched = st.selectbox("Schedule", ["Structural", "Admin"], index=["Structural", "Admin"].index(target_data['schedule']))
+                    
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    e_core = st.checkbox("Counts Towards Minimum Manning (Core)", value=bool(target_data.get('core_manning', True)))
+                    
+                    st.markdown("**Certifications**")
+                    c1, c2, c3, c4 = st.columns(4)
+                    e_off1 = c1.checkbox("Officer 1", value=bool(target_data.get('officer_1', False)))
+                    e_off2 = c2.checkbox("Officer 2", value=bool(target_data.get('officer_2', False)))
+                    e_insp = c3.checkbox("Inspector", value=bool(target_data.get('inspector', False)))
+                    e_inst = c4.checkbox("Instructor", value=bool(target_data.get('instructor', False)))
+                    
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    btn_col1, btn_col2 = st.columns(2)
+                    if btn_col1.form_submit_button("Save Changes", type="primary"):
+                        conn = get_db_connection()
+                        c = conn.cursor()
+                        c.execute("UPDATE Personnel SET Seniority=%s, Shift=%s, Schedule=%s, Core_Manning=%s, Hire_Date=%s, Officer_1=%s, Officer_2=%s, Inspector=%s, Instructor=%s WHERE Name=%s",
+                                  (e_sen, e_shift, e_sched, e_core, e_hire.strftime("%Y-%m-%d"), e_off1, e_off2, e_insp, e_inst, edit_target))
+                        conn.commit()
+                        conn.close()
+                        recalculate_ff_seniority()
+                        st.success(f"Updated {edit_target}!")
+                        time.sleep(1)
+                        st.rerun()
+                        
+                    if btn_col2.form_submit_button("❌ Delete Personnel"):
+                        conn = get_db_connection()
+                        c = conn.cursor()
+                        c.execute("DELETE FROM Personnel WHERE Name = %s", (edit_target,))
+                        c.execute("DELETE FROM Overtime_Buckets WHERE Name = %s", (edit_target,))
+                        conn.commit()
+                        conn.close()
+                        recalculate_ff_seniority()
+                        st.success(f"Deleted {edit_target} from roster. Firefighters shifted up.")
+                        time.sleep(1.5)
+                        st.rerun()
 
     # ----------------------------------------
     # TAB 5: OVERTIME BUCKETS
@@ -1885,7 +1966,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
             if st.button("Generate Backup File", use_container_width=True):
                 conn = get_db_connection()
                 table_queries = {
-                    "Personnel": "SELECT name, seniority, core_manning, schedule, shift, officer_1, officer_2, inspector, instructor FROM Personnel",
+                    "Personnel": "SELECT name, seniority, core_manning, schedule, shift, officer_1, officer_2, inspector, instructor, hire_date FROM Personnel",
                     "Overtime_Buckets": "SELECT name, seniority, shift, current_hours, contact FROM Overtime_Buckets",
                     "Leave_Ledger": "SELECT id, target_date, name, leave_type, start_time, end_time, total_hours FROM Leave_Ledger",
                     "Overtime_Log": "SELECT id, target_date, name, ot_type, start_time, end_time, total_hours FROM Overtime_Log",
