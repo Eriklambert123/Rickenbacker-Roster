@@ -18,18 +18,12 @@ st.set_page_config(page_title="Rickenbacker Fire Department Management", layout=
 DB_URI = st.secrets["DB_URI"]
 ADMIN_PIN = st.secrets.get("ADMIN_PIN", "2026")
 
-# CSS to eliminate top whitespace, tighten layout, and enlarge radio buttons
+# CSS: Restored top padding to prevent title cut-off, kept enlarged radio buttons
 st.markdown("""
 <style>
-/* Shift the entire app upward to maximize screen real estate */
 .block-container { 
-    padding-top: 0.25rem !important; 
-    margin-top: -15px !important;
+    padding-top: 2rem !important; 
 }
-header[data-testid="stHeader"] {
-    height: 2.5rem !important;
-}
-
 [data-testid="column"] { padding: 0 0.3rem !important; }
 [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 0.5rem !important; }
 
@@ -123,7 +117,7 @@ else:
 
 st.sidebar.divider()
 
-# Updated Target Date Selection (Larger Font, Removed "Dashboard Controls" header)
+# Updated Target Date Selection
 st.sidebar.markdown("<div style='font-size: 1.25rem; font-weight: 600; margin-bottom: 5px;'>Select Target Date</div>", unsafe_allow_html=True)
 target_date = st.sidebar.date_input("Select Target Date", datetime.date.today(), label_visibility="collapsed")
 target_date_str = target_date.strftime("%Y-%m-%d")
@@ -137,9 +131,6 @@ elif shift_mod == 1:
     selected_shift, top_shift_color = "B-Shift", "#2196F3"
 else: 
     selected_shift, top_shift_color = "C-Shift", "#F44336"
-
-# Removed "Target Shift:" prefix, display only the dynamic shift name
-st.sidebar.markdown(f"<div style='color:{top_shift_color}; font-weight:900; font-size:1.8rem; text-align: center; margin-top: 10px; margin-bottom: 5px;'>{selected_shift}</div>", unsafe_allow_html=True)
 
 st.sidebar.divider()
 
@@ -861,6 +852,9 @@ st.title("🚒 Rickenbacker Fire Department Management")
 # PAGE 1: DAILY ROSTER
 # ==========================================
 if selected_page == "📋 Daily Roster":
+    # Prominent Shift Label Displayed on Roster Page
+    st.markdown(f"<h2 style='color:{top_shift_color}; margin-top: -15px;'>{selected_shift}</h2>", unsafe_allow_html=True)
+    
     col1, col2, col3 = st.columns(3)
     
     with col1:
