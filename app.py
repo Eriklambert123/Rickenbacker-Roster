@@ -18,12 +18,22 @@ st.set_page_config(page_title="Rickenbacker Fire Department Management", layout=
 DB_URI = st.secrets["DB_URI"]
 ADMIN_PIN = st.secrets.get("ADMIN_PIN", "2026")
 
-# CSS to eliminate top whitespace and tighten layout
+# CSS to eliminate top whitespace, tighten layout, and enlarge radio buttons
 st.markdown("""
 <style>
-.block-container { padding-top: 1.5rem !important; }
+/* Shift the entire app upward to maximize screen real estate */
+.block-container { 
+    padding-top: 0.25rem !important; 
+    margin-top: -15px !important;
+}
+header[data-testid="stHeader"] {
+    height: 2.5rem !important;
+}
+
 [data-testid="column"] { padding: 0 0.3rem !important; }
 [data-testid="stVerticalBlockBorderWrapper"] > div { padding: 0.5rem !important; }
+
+/* Popover list density */
 [data-testid="stPopover"] button { padding: 4px 6px !important; min-height: auto !important; height: auto !important; }
 [data-testid="stPopover"] button p { 
     font-size: 0.82rem !important; 
@@ -32,6 +42,19 @@ st.markdown("""
     margin: 0 !important; 
 }
 hr { margin: 0.8em 0 !important; }
+
+/* Enlarge Sidebar Radio Buttons & Text */
+.stRadio div[role="radiogroup"] label {
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
+}
+.stRadio div[role="radiogroup"] p {
+    font-size: 1.3rem !important;
+    font-weight: 500 !important;
+}
+.stRadio div[role="radiogroup"] div[data-baseweb="radio"] div {
+    transform: scale(1.25);
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -100,8 +123,9 @@ else:
 
 st.sidebar.divider()
 
-st.sidebar.header("Dashboard Controls")
-target_date = st.sidebar.date_input("Select Target Date", datetime.date.today())
+# Updated Target Date Selection (Larger Font, Removed "Dashboard Controls" header)
+st.sidebar.markdown("<div style='font-size: 1.25rem; font-weight: 600; margin-bottom: 5px;'>Select Target Date</div>", unsafe_allow_html=True)
+target_date = st.sidebar.date_input("Select Target Date", datetime.date.today(), label_visibility="collapsed")
 target_date_str = target_date.strftime("%Y-%m-%d")
 
 anchor_date = datetime.date(2026, 9, 16) 
@@ -114,7 +138,8 @@ elif shift_mod == 1:
 else: 
     selected_shift, top_shift_color = "C-Shift", "#F44336"
 
-st.sidebar.markdown(f"**Target Shift:** <span style='color:{top_shift_color}; font-weight:bold; font-size:1.1em;'>{selected_shift}</span>", unsafe_allow_html=True)
+# Removed "Target Shift:" prefix, display only the dynamic shift name
+st.sidebar.markdown(f"<div style='color:{top_shift_color}; font-weight:900; font-size:1.8rem; text-align: center; margin-top: 10px; margin-bottom: 5px;'>{selected_shift}</div>", unsafe_allow_html=True)
 
 st.sidebar.divider()
 
