@@ -18,7 +18,7 @@ st.set_page_config(page_title="Rickenbacker Fire Department Management", layout=
 DB_URI = st.secrets["DB_URI"]
 ADMIN_PIN = st.secrets.get("ADMIN_PIN", "2026")
 
-# CSS: Restored top padding to prevent title cut-off, kept enlarged radio buttons
+# CSS: Top padding adjusted, enlarged radio buttons
 st.markdown("""
 <style>
 .block-container { 
@@ -169,7 +169,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS Station_Events (id SERIAL PRIMARY KEY, T
 c.execute('''CREATE TABLE IF NOT EXISTS Overtime_Buckets (Name TEXT PRIMARY KEY, Seniority INTEGER, Shift TEXT, Current_Hours REAL, Contact TEXT)''')
 c.execute('''CREATE TABLE IF NOT EXISTS OT_Archive (id SERIAL PRIMARY KEY, Archive_Stamp TEXT, Notes TEXT, Name TEXT, Start_Hours REAL, Hours_Applied REAL, Status TEXT)''')
 
-# Safely apply database schema updates (Adds Certifications & Hire Date Tracking)
+# Safely apply database schema updates
 c.execute('''ALTER TABLE Station_Events ADD COLUMN IF NOT EXISTS Instructor TEXT''')
 c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_1 BOOLEAN DEFAULT FALSE''')
 c.execute('''ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_2 BOOLEAN DEFAULT FALSE''')
@@ -268,19 +268,22 @@ def recalculate_ff_seniority():
     """Automatically sorts firefighters by Hire Date and shifts them up to close any gaps."""
     conn_rec = get_db_connection()
     df_rec = pd.read_sql("SELECT * FROM Personnel", conn_rec)
-    df_rec['Hire_Date'] = df_rec['Hire_Date'].fillna('2020-01-01')
+    
+    # Force lowercase so pandas recognizes the columns without throwing a KeyError
+    df_rec.columns = [c.lower() for c in df_rec.columns]
+    df_rec['hire_date'] = df_rec['hire_date'].fillna('2020-01-01')
     
     # 1-10 are explicitly reserved for Officers
-    officers = df_rec[df_rec['Seniority'] <= 10].copy()
-    ffs = df_rec[df_rec['Seniority'] > 10].copy()
+    officers = df_rec[df_rec['seniority'] <= 10].copy()
+    ffs = df_rec[df_rec['seniority'] > 10].copy()
     
     # Sort Firefighters by Hire Date (and maintain old seniority as tie breaker)
-    ffs = ffs.sort_values(by=['Hire_Date', 'Seniority'])
+    ffs = ffs.sort_values(by=['hire_date', 'seniority'])
     
     updates = []
     current_sen = 11
     for _, row in ffs.iterrows():
-        updates.append((current_sen, row['Name']))
+        updates.append((current_sen, row['name']))
         current_sen += 1
         
     if updates:
