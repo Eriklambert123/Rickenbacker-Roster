@@ -1106,7 +1106,7 @@ if selected_page == "📋 Daily Roster":
             time.sleep(1)
             st.rerun()
             
-        if rm_col3.button("🔮 Auto-Project & Commit Next 5 Days", type="secondary", use_container_width=True):
+        if rm_col3.button("🔮 Auto-Project & Commit Next 5 Shifts", type="secondary", use_container_width=True):
             with st.spinner("Projecting and locking future rosters..."):
                 import copy
                 temp_stats = copy.deepcopy(stat_lookup)
@@ -1115,7 +1115,8 @@ if selected_page == "📋 Daily Roster":
                 success_count = 0
                 
                 for i in range(1, 6):
-                    p_dt = target_date + datetime.timedelta(days=i)
+                    # Multiply by 3 to skip ahead exactly one shift cycle (24/48 schedule)
+                    p_dt = target_date + datetime.timedelta(days=i * 3)
                     p_str = p_dt.strftime("%Y-%m-%d")
                     p_sm = (p_dt - anchor_date).days % 3
                     p_shift = "A" if p_sm == 0 else ("B" if p_sm == 1 else "C")
