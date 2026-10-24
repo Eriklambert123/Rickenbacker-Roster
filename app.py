@@ -608,7 +608,7 @@ on_duty_dropdown_list = sorted(list(set([n.replace(" (Trade)", "").replace(" (OT
 
 roster_generation_error = False
 try:
-    am_rigs_raw, pm_rigs_raw = build_roster_assignment(am_crew, pm_crew, override_dict, stat_lookup, partial_leaves)
+    am_rigs_raw, pm_rigs_raw = build_roster_assignment(am_crew, pm_crew, seat_to_override, stat_lookup, partial_leaves)
     am_roster = apply_cross_staffing_and_watches(am_rigs_raw, db_watches)
     pm_roster = apply_cross_staffing_and_watches(pm_rigs_raw, db_watches)
 except IndexError:
