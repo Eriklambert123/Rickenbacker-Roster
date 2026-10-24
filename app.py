@@ -2008,7 +2008,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 conn.close()
                 st.error(f"Error saving Overtime List: {e}")
 
-   # ----------------------------------------
+ # ----------------------------------------
     # TAB 6: DATABASE BACKUPS
     # ----------------------------------------
     with de_tabs[5]:
@@ -2113,6 +2113,3 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                             conn.rollback()
                             conn.close()
                         st.error(f"Restore failed: {e}")
-                    "Personnel": "SELECT name, seniority, core_manning, schedule, shift, officer_1, officer_2, inspector, instructor, hire_date FROM Personnel",
-                    "Overtime_Buckets": "SELECT name, seniority, shift, current_hours, contact FROM Overtime_Buckets",
-                    "Leave_Ledger": "SELECT id, target_date, name, leave_type, start_time, end_time, total_hours FROM Leave_Ledger",
