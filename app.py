@@ -1126,11 +1126,11 @@ if selected_page == "📋 Daily Roster":
                     ov_df = pd.read_sql("SELECT * FROM Manual_Overrides WHERE Target_Date=%s", conn_proj, params=(p_str,))
                     w_df = pd.read_sql("SELECT * FROM ARO_Watch WHERE Target_Date=%s", conn_proj, params=(p_str,))
                     
-                    l_df.columns = [c.lower() for c in l_df.columns] if not l_df.empty else []
-                    o_df.columns = [c.lower() for c in o_df.columns] if not o_df.empty else []
-                    t_df.columns = [c.lower() for c in t_df.columns] if not t_df.empty else []
-                    ov_df.columns = [c.lower() for c in ov_df.columns] if not ov_df.empty else []
-                    w_df.columns = [c.lower() for c in w_df.columns] if not w_df.empty else []
+                    l_df.columns = [c.lower() for c in l_df.columns]
+                    o_df.columns = [c.lower() for c in o_df.columns]
+                    t_df.columns = [c.lower() for c in t_df.columns]
+                    ov_df.columns = [c.lower() for c in ov_df.columns]
+                    w_df.columns = [c.lower() for c in w_df.columns]
                     
                     p_ov_dict = dict(zip(ov_df['name'], ov_df['seat'])) if not ov_df.empty else {}
                     p_ov_dict = {v: k for k, v in p_ov_dict.items()}
