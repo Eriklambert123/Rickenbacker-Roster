@@ -6,7 +6,9 @@ import calendar
 import time
 import io
 import copy
+import itertools
 import warnings
+from zoneinfo import ZoneInfo
 
 warnings.filterwarnings('ignore')
 
@@ -59,6 +61,14 @@ hr { margin: 0.8em 0 !important; }
 
 WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 ADMIN_DAY_OPTIONS = ["None", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+
+
+def get_station_today():
+    """Returns the current date in Rickenbacker Station local time (America/New_York)."""
+    try:
+        return datetime.datetime.now(ZoneInfo("America/New_York")).date()
+    except Exception:
+        return (datetime.datetime.utcnow() - datetime.timedelta(hours=4)).date()
 
 
 def get_icon(entry_type):
@@ -193,7 +203,7 @@ else:
 st.sidebar.divider()
 
 st.sidebar.markdown("<div style='font-size: 1.25rem; font-weight: 600; margin-bottom: 5px;'>Select Target Date</div>", unsafe_allow_html=True)
-target_date = st.sidebar.date_input("Select Target Date", datetime.date.today(), label_visibility="collapsed")
+target_date = st.sidebar.date_input("Select Target Date", get_station_today(), label_visibility="collapsed")
 target_date_str = target_date.strftime("%Y-%m-%d")
 
 anchor_date = datetime.date(2026, 9, 16)
@@ -383,7 +393,7 @@ def recalculate_ff_seniority():
 
 
 @st.cache_resource
-def init_db(_schema_v=4):
+def init_db(_schema_v=5):
     conn = get_db_connection()
     try:
         with conn.cursor() as c:
@@ -469,6 +479,10 @@ def init_db(_schema_v=4):
                 ]
                 c.executemany("INSERT INTO Apparatus (Rig_Name, Status) VALUES (%s, %s)", default_rigs)
 
+            # Clean up any future-dated Position_Log rows left over from legacy manual projections
+            today_cleanup_str = get_station_today().strftime("%Y-%m-%d")
+            c.execute("DELETE FROM Position_Log WHERE Target_Date >= %s", (today_cleanup_str,))
+
             # Check if master certification sheet sync has been applied
             c.execute("SELECT COUNT(*) FROM System_Migrations WHERE Migration_Key = 'cert_sheet_sync_v1'")
             already_synced = (c.fetchone()[0] > 0)
@@ -520,17 +534,30 @@ try:
     all_trades_df = pd.read_sql("SELECT * FROM Shift_Trades_V3", conn)
     all_trades_df.columns = [c.lower() for c in all_trades_df.columns] if not all_trades_df.empty else ["id", "date_1", "name_1", "date_2", "name_2", "start_time", "end_time", "total_hours"]
 
-    aro_watch_df = pd.read_sql("SELECT * FROM ARO_Watch WHERE Target_Date = %s", conn, params=(target_date_str,))
-    aro_watch_df.columns = [c.lower() for c in aro_watch_df.columns] if not aro_watch_df.empty else ["id", "target_date", "watch_period", "name"]
+    station_today = get_station_today()
+    station_today_str = station_today.strftime("%Y-%m-%d")
 
-    overrides_df = pd.read_sql("SELECT * FROM Manual_Overrides WHERE Target_Date = %s", conn, params=(target_date_str,))
-    overrides_df.columns = [c.lower() for c in overrides_df.columns] if not overrides_df.empty else ["id", "target_date", "name", "seat", "period"]
-    if 'period' not in overrides_df.columns:
-        overrides_df['period'] = 'FULL'
+    all_aro_watch_df = pd.read_sql("SELECT * FROM ARO_Watch", conn)
+    all_aro_watch_df.columns = [c.lower() for c in all_aro_watch_df.columns] if not all_aro_watch_df.empty else ["id", "target_date", "watch_period", "name"]
+    aro_watch_df = all_aro_watch_df[all_aro_watch_df['target_date'] == target_date_str].copy() if not all_aro_watch_df.empty else pd.DataFrame(columns=["id", "target_date", "watch_period", "name"])
+
+    all_overrides_df = pd.read_sql("SELECT * FROM Manual_Overrides", conn)
+    all_overrides_df.columns = [c.lower() for c in all_overrides_df.columns] if not all_overrides_df.empty else ["id", "target_date", "name", "seat", "period"]
+    if 'period' not in all_overrides_df.columns:
+        all_overrides_df['period'] = 'FULL'
     else:
-        overrides_df['period'] = overrides_df['period'].fillna('FULL')
+        all_overrides_df['period'] = all_overrides_df['period'].fillna('FULL')
+    overrides_df = all_overrides_df[all_overrides_df['target_date'] == target_date_str].copy() if not all_overrides_df.empty else pd.DataFrame(columns=["id", "target_date", "name", "seat", "period"])
 
-    stats_df = pd.read_sql("SELECT Name, Position, SUM(Hours) as Total_Hours FROM Position_Log GROUP BY Name, Position", conn)
+    # Ensure Position_Log only reflects completed past shifts (< station_today_str)
+    with conn.cursor() as c_clean:
+        c_clean.execute("DELETE FROM Position_Log WHERE Target_Date >= %s", (station_today_str,))
+    conn.commit()
+
+    all_pos_log_df = pd.read_sql("SELECT Target_Date, Name, Position, Hours FROM Position_Log WHERE Target_Date < %s", conn, params=(station_today_str,))
+    all_pos_log_df.columns = [c.lower() for c in all_pos_log_df.columns] if not all_pos_log_df.empty else ["target_date", "name", "position", "hours"]
+
+    stats_df = pd.read_sql("SELECT Name, Position, SUM(Hours) as Total_Hours FROM Position_Log WHERE Target_Date < %s GROUP BY Name, Position", conn, params=(station_today_str,))
     stats_df.columns = [c.lower() for c in stats_df.columns] if not stats_df.empty else ["name", "position", "total_hours"]
 
     events_df = pd.read_sql("SELECT * FROM Station_Events", conn)
@@ -732,6 +759,91 @@ def apply_cross_staffing_and_watches(rigs, d_watches, oos_list_local):
     return rigs
 
 
+# --- OPTIMAL ROTATING SEAT BALANCER ---
+def assign_optimal_rotating_seats(candidates_pool, open_seats_list, stats_local):
+    """
+    Globally assigns firefighters in `candidates_pool` to `open_seats_list` (up to 6 rotating seats)
+    to minimize both individual seat hour deficits and apparatus-level (E-221 vs R-221 vs ARO) hour
+    imbalance. Prevents any firefighter from getting repeatedly stacked on E-221 once their deficit
+    is caught up.
+    """
+    if not candidates_pool or not open_seats_list:
+        return {}, candidates_pool
+
+    n_assign = min(len(candidates_pool), len(open_seats_list))
+    active_cands = candidates_pool[:n_assign]
+    leftover_cands = candidates_pool[n_assign:]
+    seats_to_fill = open_seats_list[:n_assign]
+
+    all_rot_names = [f"{r} {p}" for r, p in rotating_seats]
+    rig_seat_counts = {"ARO": 1.0, "E-221": 3.0, "R-221": 2.0}
+
+    # Precompute each candidate's seat hours, personal average, and apparatus averages
+    cand_profiles = {}
+    for p in active_cands:
+        c_name = clean_display_name(p["Name"])
+        p_st = stats_local.get(c_name, {})
+        s_hrs = {sn: float(p_st.get(sn, 0.0)) for sn in all_rot_names}
+        avg_s = sum(s_hrs.values()) / 6.0
+        rig_avgs = {}
+        for r_key, r_cnt in rig_seat_counts.items():
+            rig_avgs[r_key] = sum(s_hrs[f"{r_iter} {p_iter}"] for r_iter, p_iter in rotating_seats if r_iter == r_key) / r_cnt
+        cand_profiles[p["Name"]] = {
+            "clean": c_name,
+            "is_admin": c_name in admin_names,
+            "seat_hrs": s_hrs,
+            "avg_seat": avg_s,
+            "rig_avg": rig_avgs,
+            "sen": p["Seniority"]
+        }
+
+    best_perm = None
+    best_score = None
+
+    for perm in itertools.permutations(active_cands, n_assign):
+        admin_in_aro = 0
+        rel_seat_cost = 0.0
+        raw_seat_cost = 0.0
+        rig_balance_cost = 0.0
+        tie_breaker = 0.0
+
+        for idx, person in enumerate(perm):
+            rig, pos = seats_to_fill[idx]
+            seat_name = f"{rig} {pos}"
+            prof = cand_profiles[person["Name"]]
+
+            if rig == "ARO" and prof["is_admin"]:
+                admin_in_aro += 1
+
+            h_s = prof["seat_hrs"].get(seat_name, 0.0)
+            # Deviation from firefighter's own average across the 6 rotating seats
+            rel_s = h_s - prof["avg_seat"]
+            # Deviation of this apparatus (E-221 vs R-221 vs ARO) from firefighter's average
+            rel_r = prof["rig_avg"].get(rig, 0.0) - prof["avg_seat"]
+
+            # Post-shift squared excess above personal baseline + raw seat hours
+            rel_seat_cost += ((rel_s + 24.0) ** 2)
+            raw_seat_cost += ((h_s + 24.0) ** 2)
+            rig_balance_cost += ((rel_r + (24.0 / rig_seat_counts.get(rig, 1.0))) ** 2)
+            tie_breaker += prof["sen"] * (idx + 1) * 0.0001
+
+        # Combined cost prioritizes:
+        # 1. Keeping Admin out of ARO Float if structural FF is available
+        # 2. Equalizing seat hours (both relative to personal average and raw across shift) plus apparatus balance
+        combined_metric = round(rel_seat_cost * 1.5 + raw_seat_cost * 1.0 + rig_balance_cost * 0.75, 4)
+        score = (admin_in_aro, combined_metric, round(rig_balance_cost, 4), round(tie_breaker, 6))
+        if best_score is None or score < best_score:
+            best_score = score
+            best_perm = perm
+
+    assigned_map = {}
+    for idx, person in enumerate(best_perm):
+        rig, pos = seats_to_fill[idx]
+        assigned_map[(rig, pos)] = person["Name"]
+
+    return assigned_map, leftover_cands
+
+
 # --- CENTRALIZED ROSTER ASSIGNMENT ENGINE ---
 def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, partial_leaves_list):
     am_r = get_empty_rigs()
@@ -785,33 +897,18 @@ def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, p
             am_r[rig][pos] = chosen["Name"]
             am_p.remove(chosen)
 
-    # 3. AM Rotating
+    # 3. AM Rotating (Global Minimum-Imbalance Assignment)
+    open_am_rot = [(r, pos) for r, pos in rotating_seats if am_r[r][pos] == ""]
     rotation_pool = []
-    while am_p and len(rotation_pool) < len([p for r, p in rotating_seats if am_r[r][p] == ""]):
+    while am_p and len(rotation_pool) < len(open_am_rot):
         rotation_pool.append(am_p.pop(0))
 
-    for rig, pos in rotating_seats:
-        if am_r[rig][pos] == "":
-            if not rotation_pool:
-                break
-            seat_name = f"{rig} {pos}"
-            if rig == "ARO":
-                eligible = [p for p in rotation_pool if clean_display_name(p["Name"]) not in admin_names]
-                if not eligible:
-                    eligible = rotation_pool
-            else:
-                eligible = rotation_pool
+    am_rot_assigned, leftover_am_rot = assign_optimal_rotating_seats(rotation_pool, open_am_rot, stats_local)
+    for (rig, pos), chosen_name in am_rot_assigned.items():
+        am_r[rig][pos] = chosen_name
 
-            if not eligible:
-                break
-            eligible.sort(key=lambda x: (stats_local.get(clean_display_name(x["Name"]), {}).get(seat_name, 0), x["Seniority"]))
-            chosen = eligible[0]
-            rotation_pool.remove(chosen)
-            am_r[rig][pos] = chosen["Name"]
-
-    # Return any leftover rotation_pool members back to am_p for crash seats
-    if rotation_pool:
-        am_p = rotation_pool + am_p
+    if leftover_am_rot:
+        am_p = leftover_am_rot + am_p
 
     # 4. AM Crash
     for rig, pos in crash_seats:
@@ -878,24 +975,17 @@ def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, p
             pm_r[rig][pos] = chosen["Name"]
             structural_pm_pool.remove(chosen)
 
-    for rig, pos in rotating_seats:
-        if pm_r[rig][pos] == "":
-            if not structural_pm_pool:
-                break
-            seat_name = f"{rig} {pos}"
-            if rig == "ARO":
-                eligible = [p for p in structural_pm_pool if clean_display_name(p["Name"]) not in admin_names]
-                if not eligible:
-                    eligible = structural_pm_pool
-            else:
-                eligible = structural_pm_pool
+    open_pm_rot = [(r, pos) for r, pos in rotating_seats if pm_r[r][pos] == ""]
+    pm_rot_pool = []
+    while structural_pm_pool and len(pm_rot_pool) < len(open_pm_rot):
+        pm_rot_pool.append(structural_pm_pool.pop(0))
 
-            if not eligible:
-                break
-            eligible.sort(key=lambda x: (stats_local.get(clean_display_name(x["Name"]), {}).get(seat_name, 0), x["Seniority"]))
-            chosen = eligible[0]
-            structural_pm_pool.remove(chosen)
-            pm_r[rig][pos] = chosen["Name"]
+    pm_rot_assigned, leftover_pm_rot = assign_optimal_rotating_seats(pm_rot_pool, open_pm_rot, stats_local)
+    for (rig, pos), chosen_name in pm_rot_assigned.items():
+        pm_r[rig][pos] = chosen_name
+
+    if leftover_pm_rot:
+        structural_pm_pool = leftover_pm_rot + structural_pm_pool
 
     for rig, pos in crash_seats:
         if pm_r[rig][pos] == "" and structural_pm_pool:
@@ -1018,13 +1108,349 @@ pm_crew.sort(key=lambda x: x["Seniority"])
 all_on_duty = set([p["Name"] for p in am_crew] + [p["Name"] for p in pm_crew])
 on_duty_dropdown_list = sorted(list(set([clean_display_name(n) for n in all_on_duty if n != "VACANT"])))
 
+def get_transition_time_for_date_sim(am_full, pm_full, date_str_local, ot_df_local, trades_df_local, leave_df_local):
+    am_n = clean_display_name(am_full) if am_full else ""
+    pm_n = clean_display_name(pm_full) if pm_full else ""
+
+    t_time = "1500"
+    if pm_n and pm_n != "VACANT":
+        if not ot_df_local.empty:
+            for _, r in ot_df_local[ot_df_local['name'] == pm_n].iterrows():
+                if str(r['start_time']).replace(":", "").strip() != "0700":
+                    t_time = r['start_time']
+        if not trades_df_local.empty:
+            cond = (
+                ((trades_df_local['date_1'] == date_str_local) & (trades_df_local['name_2'] == pm_n)) |
+                ((trades_df_local['date_2'] == date_str_local) & (trades_df_local['name_1'] == pm_n))
+            )
+            for _, r in trades_df_local[cond].iterrows():
+                if str(r['start_time']).replace(":", "").strip() != "0700":
+                    t_time = r['start_time']
+        if not leave_df_local.empty:
+            for _, r in leave_df_local[leave_df_local['name'] == pm_n].iterrows():
+                if str(r['start_time']).replace(":", "").strip() == "0700" and float(r['total_hours']) < 24:
+                    t_time = r['end_time']
+
+    if am_n and am_n != "VACANT":
+        if not leave_df_local.empty:
+            for _, r in leave_df_local[leave_df_local['name'] == am_n].iterrows():
+                if str(r['start_time']).replace(":", "").strip() != "0700":
+                    t_time = r['start_time']
+        if not trades_df_local.empty:
+            cond = (
+                ((trades_df_local['date_1'] == date_str_local) & (trades_df_local['name_1'] == am_n)) |
+                ((trades_df_local['date_2'] == date_str_local) & (trades_df_local['name_2'] == am_n))
+            )
+            for _, r in trades_df_local[cond].iterrows():
+                if str(r['start_time']).replace(":", "").strip() != "0700":
+                    t_time = r['start_time']
+        if not ot_df_local.empty:
+            for _, r in ot_df_local[ot_df_local['name'] == am_n].iterrows():
+                if str(r['end_time']).replace(":", "").strip() != "0700" and float(r['total_hours']) < 24:
+                    t_time = r['end_time']
+
+    t_time = str(t_time).replace(":", "").strip()
+    if len(t_time) == 3:
+        t_time = "0" + t_time
+    return t_time
+
+
+def simulate_single_date_roster(sim_dt, running_stats):
+    """
+    Computes the full AM/PM roster and Position_Log records for `sim_dt` using `running_stats`,
+    and increments `running_stats` with the resulting seat hours and watches.
+    """
+    sim_str = sim_dt.strftime("%Y-%m-%d")
+    sim_mod = (sim_dt - anchor_date).days % 3
+    sim_shift = "A" if sim_mod == 0 else ("B" if sim_mod == 1 else "C")
+
+    l_df = all_leave_df[all_leave_df['target_date'] == sim_str] if not all_leave_df.empty else pd.DataFrame()
+    o_df = all_ot_df[all_ot_df['target_date'] == sim_str] if not all_ot_df.empty else pd.DataFrame()
+    t_df = all_trades_df[(all_trades_df['date_1'] == sim_str) | (all_trades_df['date_2'] == sim_str)] if not all_trades_df.empty else pd.DataFrame()
+    ov_df = all_overrides_df[all_overrides_df['target_date'] == sim_str] if not all_overrides_df.empty else pd.DataFrame()
+    w_df = all_aro_watch_df[all_aro_watch_df['target_date'] == sim_str] if not all_aro_watch_df.empty else pd.DataFrame()
+
+    sim_ov_am, sim_ov_pm = build_override_maps(ov_df)
+    sim_w_dict = dict(zip(w_df['watch_period'], w_df['name'])) if not w_df.empty else {}
+
+    if sim_dt.weekday() < 5:
+        sim_pdf = all_personnel_df[(all_personnel_df['shift'] == sim_shift) | (all_personnel_df['shift'] == 'ADMIN')]
+    else:
+        sim_pdf = all_personnel_df[(all_personnel_df['shift'] == sim_shift)]
+
+    s_l_am, s_l_pm, s_p_leaves = set(), set(), []
+    if not l_df.empty:
+        for _, l in l_df.iterrows():
+            am, pm = parse_time(l['start_time'], l['end_time'], float(l['total_hours']), is_absence=True)
+            if am:
+                s_l_am.add(l['name'])
+            if pm:
+                s_l_pm.add(l['name'])
+            if float(l['total_hours']) < 24.0:
+                s_p_leaves.append(l['name'])
+
+    s_t_am_off, s_t_pm_off, s_t_am_w, s_t_pm_w = set(), set(), {}, {}
+    if not t_df.empty:
+        for _, t in t_df.iterrows():
+            am_off, pm_off = parse_time(t['start_time'], t['end_time'], float(t['total_hours']), is_absence=True)
+            am_wrk, pm_wrk = parse_time(t['start_time'], t['end_time'], float(t['total_hours']), is_absence=False)
+            if t['date_1'] == sim_str:
+                if am_off:
+                    s_t_am_off.add(t['name_1'])
+                if am_wrk:
+                    s_t_am_w[t['name_2']] = "Trade"
+                if pm_off:
+                    s_t_pm_off.add(t['name_1'])
+                if pm_wrk:
+                    s_t_pm_w[t['name_2']] = "Trade"
+                if float(t['total_hours']) < 24.0:
+                    s_p_leaves.append(t['name_1'])
+            if t['date_2'] == sim_str:
+                if am_off:
+                    s_t_am_off.add(t['name_2'])
+                if am_wrk:
+                    s_t_am_w[t['name_1']] = "Trade"
+                if pm_off:
+                    s_t_pm_off.add(t['name_2'])
+                if pm_wrk:
+                    s_t_pm_w[t['name_1']] = "Trade"
+                if float(t['total_hours']) < 24.0:
+                    s_p_leaves.append(t['name_2'])
+
+    s_o_am, s_o_pm = {}, {}
+    if not o_df.empty:
+        for _, o in o_df.iterrows():
+            am, pm = parse_time(o['start_time'], o['end_time'], float(o['total_hours']), is_absence=False)
+            suffix = "Guard" if "Guard" in str(o['ot_type']) else "OT"
+            if am:
+                s_o_am[o['name']] = suffix
+            if pm:
+                s_o_pm[o['name']] = suffix
+
+    s_aw_am, s_aw_pm = [], []
+    for _, person in sim_pdf.iterrows():
+        name = person['name']
+        admin_pm_active = is_admin_pm_active(person, sim_dt.weekday())
+        if name not in s_l_am and name not in s_t_am_off and name not in s_t_am_w and name not in s_o_am:
+            s_aw_am.append((name, ""))
+        if admin_pm_active:
+            if name not in s_l_pm and name not in s_t_pm_off and name not in s_t_pm_w and name not in s_o_pm:
+                s_aw_pm.append((name, ""))
+
+    for name, suffix in s_t_am_w.items():
+        s_aw_am.append((name, suffix))
+    for name, suffix in s_t_pm_w.items():
+        s_aw_pm.append((name, suffix))
+    for name, suffix in s_o_am.items():
+        s_aw_am.append((name, suffix))
+    for name, suffix in s_o_pm.items():
+        s_aw_pm.append((name, suffix))
+
+    s_am_c, s_admin_am = [], []
+    for name, suffix in s_aw_am:
+        sen = personnel_info.get(name, {}).get('Seniority', 50)
+        sched = personnel_info.get(name, {}).get('Schedule', 'Structural')
+        if suffix in ["Trade", "OT", "Guard"]:
+            sched = 'Structural'
+        d_name = f"{name} ({suffix})" if suffix else name
+        if sched == 'Admin':
+            s_admin_am.append({"Name": d_name, "Seniority": sen})
+        else:
+            s_am_c.append({"Name": d_name, "Seniority": sen})
+
+    s_pm_c, s_admin_pm = [], []
+    for name, suffix in s_aw_pm:
+        sen = personnel_info.get(name, {}).get('Seniority', 50)
+        sched = personnel_info.get(name, {}).get('Schedule', 'Structural')
+        if suffix in ["Trade", "OT", "Guard"]:
+            sched = 'Structural'
+        d_name = f"{name} ({suffix})" if suffix else name
+        if sched == 'Admin':
+            s_admin_pm.append({"Name": d_name, "Seniority": sen})
+        else:
+            s_pm_c.append({"Name": d_name, "Seniority": sen})
+
+    s_admin_am.sort(key=lambda x: x["Seniority"], reverse=True)
+    s_admin_pm.sort(key=lambda x: x["Seniority"], reverse=True)
+
+    while len(s_am_c) < 9 and len(s_admin_am) > 0:
+        s_am_c.append(s_admin_am.pop(0))
+    while len(s_pm_c) < 9 and len(s_admin_pm) > 0:
+        s_pm_c.append(s_admin_pm.pop(0))
+
+    s_am_c.sort(key=lambda x: x["Seniority"])
+    s_pm_c.sort(key=lambda x: x["Seniority"])
+
+    s_am_r_raw, s_pm_r_raw = build_roster_assignment(s_am_c, s_pm_c, sim_ov_am, sim_ov_pm, running_stats, s_p_leaves)
+    s_am_r = apply_cross_staffing_and_watches(s_am_r_raw, sim_w_dict, oos_list)
+    s_pm_r = apply_cross_staffing_and_watches(s_pm_r_raw, sim_w_dict, oos_list)
+
+    records = []
+    for rig, seats in s_am_r.items():
+        for pos, am_name in seats.items():
+            pm_name = s_pm_r[rig][pos]
+            seat_name = f"{rig} {pos}"
+            if rig == "ARO" and pos != "0700-1200 (Float)":
+                continue
+            if rig in ["Crash-4", "Crash-1"] and pos == "Crew Chief":
+                continue
+            if rig == "Tanker":
+                continue
+
+            if am_name and am_name == pm_name:
+                clean_name = clean_display_name(am_name)
+                if clean_name != "VACANT":
+                    records.append((sim_str, clean_name, seat_name, 24.0))
+                    if clean_name not in running_stats:
+                        running_stats[clean_name] = {}
+                    running_stats[clean_name][seat_name] = running_stats[clean_name].get(seat_name, 0.0) + 24.0
+            else:
+                t_time = get_transition_time_for_date_sim(am_name, pm_name, sim_str, o_df, t_df, l_df)
+                am_hrs = time_to_shift_hr(t_time)
+                pm_hrs = 24.0 - am_hrs
+                if am_name and am_name != "VACANT":
+                    clean_am = clean_display_name(am_name)
+                    records.append((sim_str, clean_am, seat_name, round(am_hrs, 1)))
+                    if clean_am not in running_stats:
+                        running_stats[clean_am] = {}
+                    running_stats[clean_am][seat_name] = running_stats[clean_am].get(seat_name, 0.0) + round(am_hrs, 1)
+                if pm_name and pm_name != "VACANT":
+                    clean_pm = clean_display_name(pm_name)
+                    records.append((sim_str, clean_pm, seat_name, round(pm_hrs, 1)))
+                    if clean_pm not in running_stats:
+                        running_stats[clean_pm] = {}
+                    running_stats[clean_pm][seat_name] = running_stats[clean_pm].get(seat_name, 0.0) + round(pm_hrs, 1)
+
+    am_float = s_am_r["ARO"]["0700-1200 (Float)"]
+    if am_float and am_float != "VACANT":
+        clean_am = clean_display_name(am_float)
+        records.append((sim_str, clean_am, "Watch: 0700-1200", 1.0))
+        if clean_am not in running_stats:
+            running_stats[clean_am] = {}
+        running_stats[clean_am]["Watch: 0700-1200"] = running_stats[clean_am].get("Watch: 0700-1200", 0.0) + 1.0
+
+    for wp in ["1200-1700", "1700-2200", "2200-0600", "0600-0700"]:
+        if wp in sim_w_dict and sim_w_dict[wp] not in ["", "--"]:
+            clean_w = clean_display_name(sim_w_dict[wp])
+            records.append((sim_str, clean_w, f"Watch: {wp}", 1.0))
+            if clean_w not in running_stats:
+                running_stats[clean_w] = {}
+            running_stats[clean_w][f"Watch: {wp}"] = running_stats[clean_w].get(f"Watch: {wp}", 0.0) + 1.0
+
+    return s_am_r, s_pm_r, records
+
+
+# --- AUTOMATIC PAST-SHIFT COMMIT ENGINE (WHEN DATE PASSES FROM TODAY TO YESTERDAY) ---
+logged_past_dates = set(all_pos_log_df['target_date'].unique().tolist()) if not all_pos_log_df.empty else set()
+yesterday_dt = station_today - datetime.timedelta(days=1)
+
+if logged_past_dates:
+    try:
+        max_logged_dt = datetime.datetime.strptime(max(logged_past_dates), "%Y-%m-%d").date()
+    except Exception:
+        max_logged_dt = yesterday_dt - datetime.timedelta(days=1)
+    start_catchup_dt = min(max_logged_dt + datetime.timedelta(days=1), yesterday_dt)
+else:
+    start_catchup_dt = yesterday_dt
+
+missing_past_dates = []
+cur_catchup = start_catchup_dt
+while cur_catchup <= yesterday_dt:
+    c_str = cur_catchup.strftime("%Y-%m-%d")
+    if c_str not in logged_past_dates:
+        missing_past_dates.append(cur_catchup)
+    cur_catchup += datetime.timedelta(days=1)
+
+if missing_past_dates:
+    auto_commit_records = []
+    for m_dt in missing_past_dates:
+        try:
+            _, _, m_recs = simulate_single_date_roster(m_dt, stat_lookup)
+            auto_commit_records.extend(m_recs)
+        except Exception:
+            pass
+    if auto_commit_records:
+        conn_auto = get_db_connection()
+        try:
+            with conn_auto.cursor() as c_auto:
+                for m_dt in missing_past_dates:
+                    c_auto.execute("DELETE FROM Position_Log WHERE Target_Date = %s", (m_dt.strftime("%Y-%m-%d"),))
+                c_auto.executemany(
+                    "INSERT INTO Position_Log (Target_Date, Name, Position, Hours) VALUES (%s, %s, %s, %s)",
+                    auto_commit_records
+                )
+            conn_auto.commit()
+            # Refresh stats_df so Seat Statistics tab immediately reflects auto-committed shifts
+            stats_df = pd.read_sql(
+                "SELECT Name, Position, SUM(Hours) as Total_Hours FROM Position_Log WHERE Target_Date < %s GROUP BY Name, Position",
+                conn_auto,
+                params=(station_today_str,)
+            )
+            stats_df.columns = [c.lower() for c in stats_df.columns] if not stats_df.empty else ["name", "position", "total_hours"]
+        finally:
+            conn_auto.close()
+
+
+# --- DYNAMIC ROLLING FORECAST FOR TODAY & FUTURE DATES ---
+effective_stat_lookup = copy.deepcopy(stat_lookup)
+if target_date > station_today:
+    # Step chronologically from station_today through target_date - 1 day
+    # so every intermediate shift's projected hours are counted when forecasting future shifts.
+    max_forecast_horizon = station_today + datetime.timedelta(days=180)
+    sim_cursor = station_today
+    sim_limit = min(target_date, max_forecast_horizon)
+    while sim_cursor < sim_limit:
+        try:
+            simulate_single_date_roster(sim_cursor, effective_stat_lookup)
+        except Exception:
+            pass
+        sim_cursor += datetime.timedelta(days=1)
+elif target_date < station_today:
+    # When viewing or editing a past date (< station_today), exclude that date's own logged hours
+    # before computing its roster so it doesn't double-count itself, and sync Position_Log if edited.
+    past_other_df = all_pos_log_df[all_pos_log_df['target_date'] < target_date_str] if not all_pos_log_df.empty else pd.DataFrame()
+    effective_stat_lookup = {}
+    if not past_other_df.empty:
+        grp = past_other_df.groupby(['name', 'position'])['hours'].sum().reset_index()
+        for _, r in grp.iterrows():
+            cn = r['name']
+            if cn not in effective_stat_lookup:
+                effective_stat_lookup[cn] = {}
+            effective_stat_lookup[cn][r['position']] = float(r['hours'])
+
 roster_generation_error = False
 try:
-    am_rigs_raw, pm_rigs_raw = build_roster_assignment(am_crew, pm_crew, seat_to_override_am, seat_to_override_pm, stat_lookup, partial_leaves)
+    am_rigs_raw, pm_rigs_raw = build_roster_assignment(am_crew, pm_crew, seat_to_override_am, seat_to_override_pm, effective_stat_lookup, partial_leaves)
     am_roster = apply_cross_staffing_and_watches(am_rigs_raw, db_watches, oos_list)
     pm_roster = apply_cross_staffing_and_watches(pm_rigs_raw, db_watches, oos_list)
 except IndexError:
     roster_generation_error = True
+
+# If viewing/editing a completed past shift (< station_today), automatically keep its Position_Log entry synced
+if not roster_generation_error and target_date < station_today:
+    _, _, synced_past_records = simulate_single_date_roster(target_date, copy.deepcopy(effective_stat_lookup))
+    curr_logged_for_target = all_pos_log_df[all_pos_log_df['target_date'] == target_date_str] if not all_pos_log_df.empty else pd.DataFrame()
+    old_tuples = sorted([(r['target_date'], r['name'], r['position'], round(float(r['hours']), 1)) for _, r in curr_logged_for_target.iterrows()])
+    new_tuples = sorted([(r[0], r[1], r[2], round(float(r[3]), 1)) for r in synced_past_records])
+    if old_tuples != new_tuples:
+        conn_sync = get_db_connection()
+        try:
+            with conn_sync.cursor() as c_sync:
+                c_sync.execute("DELETE FROM Position_Log WHERE Target_Date = %s", (target_date_str,))
+                if synced_past_records:
+                    c_sync.executemany(
+                        "INSERT INTO Position_Log (Target_Date, Name, Position, Hours) VALUES (%s, %s, %s, %s)",
+                        synced_past_records
+                    )
+            conn_sync.commit()
+            stats_df = pd.read_sql(
+                "SELECT Name, Position, SUM(Hours) as Total_Hours FROM Position_Log WHERE Target_Date < %s GROUP BY Name, Position",
+                conn_sync,
+                params=(station_today_str,)
+            )
+            stats_df.columns = [c.lower() for c in stats_df.columns] if not stats_df.empty else ["name", "position", "total_hours"]
+        finally:
+            conn_sync.close()
 
 
 # --- OT Shortage Calculation Engine (Skyline Decomposition) ---
@@ -1356,7 +1782,7 @@ if roster_generation_error:
 st.title("🚒 Rickenbacker Fire Department Management")
 
 # Dynamic Year Options for Calendars
-current_yr = datetime.date.today().year
+current_yr = get_station_today().year
 dynamic_years = sorted(list(set(range(min(2025, current_yr - 1), max(2028, current_yr + 4))).union({target_date.year})))
 
 # ==========================================
@@ -1618,8 +2044,15 @@ if selected_page == "📋 Daily Roster":
     st.divider()
 
     if is_admin:
-        st.markdown("### 🛠️ Shift Finalization & Adjustments")
-        rm_col1, rm_col2, rm_col3 = st.columns(3)
+        st.markdown("### 🛠️ Shift Adjustments & Seat Locks")
+        if target_date < station_today:
+            st.caption("ℹ️ **Historical Shift:** This date has already passed and is automatically committed to Seat Statistics. Any overrides or edits made here automatically update history.")
+        elif target_date == station_today:
+            st.caption("ℹ️ **Active Shift:** Today's roster will automatically commit to Seat Statistics when the date rolls over to tomorrow.")
+        else:
+            st.caption("ℹ️ **Dynamic Rolling Forecast:** Future shifts automatically account for projected seat hours from Today and all intermediate shifts.")
+
+        rm_col1, rm_col2 = st.columns(2)
 
         if rm_col1.button("🔒 Lock Entire Current Roster", use_container_width=True):
             conn = get_db_connection()
@@ -1662,302 +2095,17 @@ if selected_page == "📋 Daily Roster":
             time.sleep(1)
             st.rerun()
 
-        if rm_col2.button("💾 Commit Today's Roster to History", type="primary", use_container_width=True):
-            records = []
-            for rig, seats in am_roster.items():
-                for pos, am_name in seats.items():
-                    pm_name = pm_roster[rig][pos]
-                    seat_name = f"{rig} {pos}"
-                    if rig == "ARO" and pos != "0700-1200 (Float)":
-                        continue
-                    if rig in ["Crash-4", "Crash-1"] and pos == "Crew Chief":
-                        continue
-                    if rig == "Tanker":
-                        continue
-
-                    if am_name and am_name == pm_name:
-                        clean_name = clean_display_name(am_name)
-                        if clean_name != "VACANT":
-                            records.append((target_date_str, clean_name, seat_name, 24.0))
-                    else:
-                        t_time = get_transition_time(am_name, pm_name)
-                        am_hrs = time_to_shift_hr(t_time)
-                        pm_hrs = 24.0 - am_hrs
-                        if am_name and am_name != "VACANT":
-                            clean_am = clean_display_name(am_name)
-                            records.append((target_date_str, clean_am, seat_name, round(am_hrs, 1)))
-                        if pm_name and pm_name != "VACANT":
-                            clean_pm = clean_display_name(pm_name)
-                            records.append((target_date_str, clean_pm, seat_name, round(pm_hrs, 1)))
-
-            am_float = am_roster["ARO"]["0700-1200 (Float)"]
-            if am_float and am_float != "VACANT":
-                clean_am = clean_display_name(am_float)
-                records.append((target_date_str, clean_am, "Watch: 0700-1200", 1.0))
-            for wp in ["1200-1700", "1700-2200", "2200-0600", "0600-0700"]:
-                if wp in db_watches and db_watches[wp] not in ["", "--"]:
-                    clean_w = clean_display_name(db_watches[wp])
-                    records.append((target_date_str, clean_w, f"Watch: {wp}", 1.0))
-
+        if rm_col2.button("🔓 Unlock All Seats on This Date", use_container_width=True):
             conn = get_db_connection()
             try:
                 c = conn.cursor()
-                c.execute("DELETE FROM Position_Log WHERE Target_Date = %s", (target_date_str,))
-                if records:
-                    c.executemany("INSERT INTO Position_Log (Target_Date, Name, Position, Hours) VALUES (%s, %s, %s, %s)", records)
+                c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s", (target_date_str,))
                 conn.commit()
             finally:
                 conn.close()
-            st.success("Roster successfully saved to history!")
+            st.success("All manual seat locks cleared for this date!")
             time.sleep(1)
             st.rerun()
-
-        if rm_col3.button("🔮 Auto-Project & Commit Next 5 Shifts", type="secondary", use_container_width=True):
-            with st.spinner("Projecting and locking future rosters..."):
-                temp_stats = copy.deepcopy(stat_lookup)
-                conn_proj = get_db_connection()
-                success_count = 0
-                projection_warnings = []
-
-                try:
-                    cur_proj = conn_proj.cursor()
-                    for i in range(1, 6):
-                        p_dt = target_date + datetime.timedelta(days=i * 3)
-                        p_str = p_dt.strftime("%Y-%m-%d")
-                        p_sm = (p_dt - anchor_date).days % 3
-                        p_shift = "A" if p_sm == 0 else ("B" if p_sm == 1 else "C")
-
-                        l_df = pd.read_sql("SELECT * FROM Leave_Ledger WHERE Target_Date=%s", conn_proj, params=(p_str,))
-                        o_df = pd.read_sql("SELECT * FROM Overtime_Log WHERE Target_Date=%s", conn_proj, params=(p_str,))
-                        t_df = pd.read_sql("SELECT * FROM Shift_Trades_V3 WHERE Date_1=%s OR Date_2=%s", conn_proj, params=(p_str, p_str))
-                        ov_df = pd.read_sql("SELECT * FROM Manual_Overrides WHERE Target_Date=%s", conn_proj, params=(p_str,))
-                        w_df = pd.read_sql("SELECT * FROM ARO_Watch WHERE Target_Date=%s", conn_proj, params=(p_str,))
-
-                        l_df.columns = [c.lower() for c in l_df.columns]
-                        o_df.columns = [c.lower() for c in o_df.columns]
-                        t_df.columns = [c.lower() for c in t_df.columns]
-                        ov_df.columns = [c.lower() for c in ov_df.columns]
-                        w_df.columns = [c.lower() for c in w_df.columns]
-
-                        if 'period' not in ov_df.columns:
-                            ov_df['period'] = 'FULL'
-                        else:
-                            ov_df['period'] = ov_df['period'].fillna('FULL')
-                        p_ov_am, p_ov_pm = build_override_maps(ov_df)
-                        p_w_dict = dict(zip(w_df['watch_period'], w_df['name'])) if not w_df.empty else {}
-
-                        if p_dt.weekday() < 5:
-                            p_pdf = all_personnel_df[(all_personnel_df['shift'] == p_shift) | (all_personnel_df['shift'] == 'ADMIN')]
-                        else:
-                            p_pdf = all_personnel_df[(all_personnel_df['shift'] == p_shift)]
-
-                        p_l_am, p_l_pm, p_p_leaves = set(), set(), []
-                        if not l_df.empty:
-                            for _, l in l_df.iterrows():
-                                am, pm = parse_time(l['start_time'], l['end_time'], float(l['total_hours']), is_absence=True)
-                                if am:
-                                    p_l_am.add(l['name'])
-                                if pm:
-                                    p_l_pm.add(l['name'])
-                                if float(l['total_hours']) < 24.0:
-                                    p_p_leaves.append(l['name'])
-
-                        p_t_am_off, p_t_pm_off, p_t_am_w, p_t_pm_w = set(), set(), {}, {}
-                        if not t_df.empty:
-                            for _, t in t_df.iterrows():
-                                am_off, pm_off = parse_time(t['start_time'], t['end_time'], float(t['total_hours']), is_absence=True)
-                                am_wrk, pm_wrk = parse_time(t['start_time'], t['end_time'], float(t['total_hours']), is_absence=False)
-                                if t['date_1'] == p_str:
-                                    if am_off:
-                                        p_t_am_off.add(t['name_1'])
-                                    if am_wrk:
-                                        p_t_am_w[t['name_2']] = "Trade"
-                                    if pm_off:
-                                        p_t_pm_off.add(t['name_1'])
-                                    if pm_wrk:
-                                        p_t_pm_w[t['name_2']] = "Trade"
-                                    if float(t['total_hours']) < 24.0:
-                                        p_p_leaves.append(t['name_1'])
-                                if t['date_2'] == p_str:
-                                    if am_off:
-                                        p_t_am_off.add(t['name_2'])
-                                    if am_wrk:
-                                        p_t_am_w[t['name_1']] = "Trade"
-                                    if pm_off:
-                                        p_t_pm_off.add(t['name_2'])
-                                    if pm_wrk:
-                                        p_t_pm_w[t['name_1']] = "Trade"
-                                    if float(t['total_hours']) < 24.0:
-                                        p_p_leaves.append(t['name_2'])
-
-                        p_o_am, p_o_pm = {}, {}
-                        if not o_df.empty:
-                            for _, o in o_df.iterrows():
-                                am, pm = parse_time(o['start_time'], o['end_time'], float(o['total_hours']), is_absence=False)
-                                suffix = "Guard" if "Guard" in str(o['ot_type']) else "OT"
-                                if am:
-                                    p_o_am[o['name']] = suffix
-                                if pm:
-                                    p_o_pm[o['name']] = suffix
-
-                        p_aw_am, p_aw_pm = [], []
-                        for _, person in p_pdf.iterrows():
-                            name = person['name']
-                            admin_pm_active = is_admin_pm_active(person, p_dt.weekday())
-                            if name not in p_l_am and name not in p_t_am_off and name not in p_t_am_w and name not in p_o_am:
-                                p_aw_am.append((name, ""))
-                            if admin_pm_active:
-                                if name not in p_l_pm and name not in p_t_pm_off and name not in p_t_pm_w and name not in p_o_pm:
-                                    p_aw_pm.append((name, ""))
-
-                        for name, suffix in p_t_am_w.items():
-                            p_aw_am.append((name, suffix))
-                        for name, suffix in p_t_pm_w.items():
-                            p_aw_pm.append((name, suffix))
-                        for name, suffix in p_o_am.items():
-                            p_aw_am.append((name, suffix))
-                        for name, suffix in p_o_pm.items():
-                            p_aw_pm.append((name, suffix))
-
-                        p_am_c, p_admin_am = [], []
-                        for name, suffix in p_aw_am:
-                            sen = personnel_info.get(name, {}).get('Seniority', 50)
-                            sched = personnel_info.get(name, {}).get('Schedule', 'Structural')
-                            if suffix in ["Trade", "OT", "Guard"]:
-                                sched = 'Structural'
-                            d_name = f"{name} ({suffix})" if suffix else name
-                            if sched == 'Admin':
-                                p_admin_am.append({"Name": d_name, "Seniority": sen})
-                            else:
-                                p_am_c.append({"Name": d_name, "Seniority": sen})
-
-                        p_pm_c, p_admin_pm = [], []
-                        for name, suffix in p_aw_pm:
-                            sen = personnel_info.get(name, {}).get('Seniority', 50)
-                            sched = personnel_info.get(name, {}).get('Schedule', 'Structural')
-                            if suffix in ["Trade", "OT", "Guard"]:
-                                sched = 'Structural'
-                            d_name = f"{name} ({suffix})" if suffix else name
-                            if sched == 'Admin':
-                                p_admin_pm.append({"Name": d_name, "Seniority": sen})
-                            else:
-                                p_pm_c.append({"Name": d_name, "Seniority": sen})
-
-                        p_admin_am.sort(key=lambda x: x["Seniority"], reverse=True)
-                        p_admin_pm.sort(key=lambda x: x["Seniority"], reverse=True)
-
-                        while len(p_am_c) < 9 and len(p_admin_am) > 0:
-                            p_am_c.append(p_admin_am.pop(0))
-                        while len(p_pm_c) < 9 and len(p_admin_pm) > 0:
-                            p_pm_c.append(p_admin_pm.pop(0))
-
-                        p_am_c.sort(key=lambda x: x["Seniority"])
-                        p_pm_c.sort(key=lambda x: x["Seniority"])
-
-                        try:
-                            p_am_r_raw, p_pm_r_raw = build_roster_assignment(p_am_c, p_pm_c, p_ov_am, p_ov_pm, temp_stats, p_p_leaves)
-                            p_am_r = apply_cross_staffing_and_watches(p_am_r_raw, p_w_dict, oos_list)
-                            p_pm_r = apply_cross_staffing_and_watches(p_pm_r_raw, p_w_dict, oos_list)
-
-                            records = []
-                            for rig, seats in p_am_r.items():
-                                for pos, am_name in seats.items():
-                                    pm_name = p_pm_r[rig][pos]
-                                    seat_name = f"{rig} {pos}"
-                                    if rig == "ARO" and pos != "0700-1200 (Float)":
-                                        continue
-                                    if rig in ["Crash-4", "Crash-1"] and pos == "Crew Chief":
-                                        continue
-                                    if rig == "Tanker":
-                                        continue
-
-                                    if am_name and am_name == pm_name:
-                                        clean_name = clean_display_name(am_name)
-                                        if clean_name != "VACANT":
-                                            records.append((p_str, clean_name, seat_name, 24.0))
-                                            if clean_name not in temp_stats:
-                                                temp_stats[clean_name] = {}
-                                            temp_stats[clean_name][seat_name] = temp_stats[clean_name].get(seat_name, 0) + 24.0
-                                    else:
-                                        t_time = get_transition_time_for_date(am_name, pm_name, p_str, o_df, t_df, l_df)
-                                        am_hrs = time_to_shift_hr(t_time)
-                                        pm_hrs = 24.0 - am_hrs
-                                        if am_name and am_name != "VACANT":
-                                            clean_am = clean_display_name(am_name)
-                                            records.append((p_str, clean_am, seat_name, round(am_hrs, 1)))
-                                            if clean_am not in temp_stats:
-                                                temp_stats[clean_am] = {}
-                                            temp_stats[clean_am][seat_name] = temp_stats[clean_am].get(seat_name, 0) + am_hrs
-                                        if pm_name and pm_name != "VACANT":
-                                            clean_pm = clean_display_name(pm_name)
-                                            records.append((p_str, clean_pm, seat_name, round(pm_hrs, 1)))
-                                            if clean_pm not in temp_stats:
-                                                temp_stats[clean_pm] = {}
-                                            temp_stats[clean_pm][seat_name] = temp_stats[clean_pm].get(seat_name, 0) + pm_hrs
-
-                            am_float = p_am_r["ARO"]["0700-1200 (Float)"]
-                            if am_float and am_float != "VACANT":
-                                clean_am = clean_display_name(am_float)
-                                records.append((p_str, clean_am, "Watch: 0700-1200", 1.0))
-                                if clean_am not in temp_stats:
-                                    temp_stats[clean_am] = {}
-                                temp_stats[clean_am]["Watch: 0700-1200"] = temp_stats[clean_am].get("Watch: 0700-1200", 0) + 1.0
-
-                            for wp in ["1200-1700", "1700-2200", "2200-0600", "0600-0700"]:
-                                if wp in p_w_dict and p_w_dict[wp] not in ["", "--"]:
-                                    clean_w = clean_display_name(p_w_dict[wp])
-                                    records.append((p_str, clean_w, f"Watch: {wp}", 1.0))
-                                    if clean_w not in temp_stats:
-                                        temp_stats[clean_w] = {}
-                                    temp_stats[clean_w][f"Watch: {wp}"] = temp_stats[clean_w].get(f"Watch: {wp}", 0) + 1.0
-
-                            cur_proj.execute("DELETE FROM Position_Log WHERE Target_Date = %s", (p_str,))
-                            cur_proj.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s", (p_str,))
-                            if records:
-                                cur_proj.executemany("INSERT INTO Position_Log (Target_Date, Name, Position, Hours) VALUES (%s, %s, %s, %s)", records)
-
-                            ov_inserts = []
-                            seen_am = set()
-                            seen_pm = set()
-                            for rig, seats in p_am_r.items():
-                                for pos, am_name in seats.items():
-                                    seat_name = f"{rig} | {pos}"
-                                    if seat_name not in all_seats_list:
-                                        continue
-                                    pm_name = p_pm_r[rig][pos]
-                                    clean_am = clean_display_name(am_name) if am_name else ""
-                                    clean_pm = clean_display_name(pm_name) if pm_name else ""
-                                    if clean_am and clean_am == clean_pm:
-                                        if (clean_am not in seen_am and clean_am not in seen_pm) or clean_am == "VACANT":
-                                            ov_inserts.append((p_str, clean_am, seat_name, "FULL"))
-                                            if clean_am != "VACANT":
-                                                seen_am.add(clean_am)
-                                                seen_pm.add(clean_am)
-                                    else:
-                                        if clean_am and (clean_am not in seen_am or clean_am == "VACANT"):
-                                            ov_inserts.append((p_str, clean_am, seat_name, "AM"))
-                                            if clean_am != "VACANT":
-                                                seen_am.add(clean_am)
-                                        if clean_pm and (clean_pm not in seen_pm or clean_pm == "VACANT"):
-                                            ov_inserts.append((p_str, clean_pm, seat_name, "PM"))
-                                            if clean_pm != "VACANT":
-                                                seen_pm.add(clean_pm)
-                            if ov_inserts:
-                                cur_proj.executemany("INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, %s)", ov_inserts)
-
-                            success_count += 1
-                        except Exception as proj_err:
-                            projection_warnings.append(f"{p_str}: {proj_err}")
-
-                    conn_proj.commit()
-                finally:
-                    conn_proj.close()
-
-                if projection_warnings:
-                    st.warning("Some shifts could not be projected: " + "; ".join(projection_warnings))
-                st.success(f"Successfully generated, locked, and committed the next {success_count} daily rosters into history!")
-                time.sleep(2)
-                st.rerun()
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("##### 🔧 Quick Manual Overrides")
@@ -2750,9 +2898,9 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 h_col1, h_col2 = st.columns(2)
                 a_hire = h_col1.date_input(
                     "Hire Date / Seniority Date",
-                    value=datetime.date.today(),
+                    value=get_station_today(),
                     min_value=datetime.date(1990, 1, 1),
-                    max_value=datetime.date.today() + datetime.timedelta(days=365)
+                    max_value=get_station_today() + datetime.timedelta(days=365)
                 )
                 a_tie = h_col2.number_input(
                     "Tie Breaker (4-Digit, Lower Wins)",
@@ -2857,7 +3005,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                         "Hire Date",
                         value=curr_hire,
                         min_value=min_hire_dt,
-                        max_value=datetime.date.today() + datetime.timedelta(days=365)
+                        max_value=get_station_today() + datetime.timedelta(days=365)
                     )
                     e_tie = eh_col2.number_input(
                         "Tie Breaker (4-Digit, Lower Wins)",
