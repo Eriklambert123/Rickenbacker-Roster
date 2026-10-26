@@ -383,7 +383,7 @@ def recalculate_ff_seniority():
 
 
 @st.cache_resource
-def init_db(_schema_v=3):
+def init_db(_schema_v=4):
     conn = get_db_connection()
     try:
         with conn.cursor() as c:
@@ -398,7 +398,7 @@ def init_db(_schema_v=3):
                 id SERIAL PRIMARY KEY, Target_Date TEXT, Name TEXT, Position TEXT, Hours REAL
             )""")
             c.execute("""CREATE TABLE IF NOT EXISTS Manual_Overrides (
-                id SERIAL PRIMARY KEY, Target_Date TEXT, Name TEXT, Seat TEXT
+                id SERIAL PRIMARY KEY, Target_Date TEXT, Name TEXT, Seat TEXT, Period TEXT DEFAULT 'FULL'
             )""")
             c.execute("""CREATE TABLE IF NOT EXISTS Personnel (
                 Name TEXT, Seniority INTEGER, Core_Manning BOOLEAN, Schedule TEXT, Shift TEXT,
@@ -453,6 +453,8 @@ def init_db(_schema_v=3):
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Hire_Date TEXT DEFAULT '2020-01-01'")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Tie_Breaker INTEGER DEFAULT 9999")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Admin_24h_Day TEXT DEFAULT 'None'")
+            c.execute("ALTER TABLE Manual_Overrides ADD COLUMN IF NOT EXISTS Period TEXT DEFAULT 'FULL'")
+            c.execute("UPDATE Manual_Overrides SET Period = 'FULL' WHERE Period IS NULL")
 
             # Migrate legacy hardcoded Admin 24h days if not set yet
             c.execute("UPDATE Personnel SET Admin_24h_Day = 'Wednesday' WHERE Name = 'Garver' AND (Admin_24h_Day IS NULL OR Admin_24h_Day = 'None')")
@@ -522,7 +524,11 @@ try:
     aro_watch_df.columns = [c.lower() for c in aro_watch_df.columns] if not aro_watch_df.empty else ["id", "target_date", "watch_period", "name"]
 
     overrides_df = pd.read_sql("SELECT * FROM Manual_Overrides WHERE Target_Date = %s", conn, params=(target_date_str,))
-    overrides_df.columns = [c.lower() for c in overrides_df.columns] if not overrides_df.empty else ["id", "target_date", "name", "seat"]
+    overrides_df.columns = [c.lower() for c in overrides_df.columns] if not overrides_df.empty else ["id", "target_date", "name", "seat", "period"]
+    if 'period' not in overrides_df.columns:
+        overrides_df['period'] = 'FULL'
+    else:
+        overrides_df['period'] = overrides_df['period'].fillna('FULL')
 
     stats_df = pd.read_sql("SELECT Name, Position, SUM(Hours) as Total_Hours FROM Position_Log GROUP BY Name, Position", conn)
     stats_df.columns = [c.lower() for c in stats_df.columns] if not stats_df.empty else ["name", "position", "total_hours"]
@@ -571,11 +577,21 @@ for _, r in all_personnel_df.iterrows():
     if r['schedule'] == 'Admin':
         admin_names.add(r['name'])
 
-override_dict = dict(zip(overrides_df['name'], overrides_df['seat'])) if not overrides_df.empty else {}
-seat_to_override = {}
-if not overrides_df.empty:
-    for _, ov_row in overrides_df.iterrows():
-        seat_to_override[ov_row['seat']] = ov_row['name']
+def build_override_maps(ov_df_local):
+    am_map = {}
+    pm_map = {}
+    if ov_df_local is not None and not ov_df_local.empty:
+        for _, ov_row in ov_df_local.iterrows():
+            s = ov_row['seat']
+            n = ov_row['name']
+            per = str(ov_row.get('period') or 'FULL').upper()
+            if per in ['FULL', 'AM']:
+                am_map[s] = n
+            if per in ['FULL', 'PM']:
+                pm_map[s] = n
+    return am_map, pm_map
+
+seat_to_override_am, seat_to_override_pm = build_override_maps(overrides_df)
 
 stat_lookup = {}
 if not stats_df.empty:
@@ -717,13 +733,13 @@ def apply_cross_staffing_and_watches(rigs, d_watches, oos_list_local):
 
 
 # --- CENTRALIZED ROSTER ASSIGNMENT ENGINE ---
-def build_roster_assignment(am_c, pm_c, ov_dict_local, stats_local, partial_leaves_list):
+def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, partial_leaves_list):
     am_r = get_empty_rigs()
     pm_r = get_empty_rigs()
     am_p = am_c.copy()
 
     # 1. AM Overrides
-    for seat_name, locked_name in ov_dict_local.items():
+    for seat_name, locked_name in am_ov_local.items():
         if seat_name not in all_seats_list:
             continue
         rig, pos = seat_name.split(" | ")
@@ -806,7 +822,7 @@ def build_roster_assignment(am_c, pm_c, ov_dict_local, stats_local, partial_leav
     pm_names = {p["Name"]: p for p in pm_c}
     assigned_pm_names = set()
 
-    for seat_name, locked_name in ov_dict_local.items():
+    for seat_name, locked_name in pm_ov_local.items():
         if seat_name not in all_seats_list:
             continue
         rig, pos = seat_name.split(" | ")
@@ -1004,7 +1020,7 @@ on_duty_dropdown_list = sorted(list(set([clean_display_name(n) for n in all_on_d
 
 roster_generation_error = False
 try:
-    am_rigs_raw, pm_rigs_raw = build_roster_assignment(am_crew, pm_crew, seat_to_override, stat_lookup, partial_leaves)
+    am_rigs_raw, pm_rigs_raw = build_roster_assignment(am_crew, pm_crew, seat_to_override_am, seat_to_override_pm, stat_lookup, partial_leaves)
     am_roster = apply_cross_staffing_and_watches(am_rigs_raw, db_watches, oos_list)
     pm_roster = apply_cross_staffing_and_watches(pm_rigs_raw, db_watches, oos_list)
 except IndexError:
@@ -1015,17 +1031,20 @@ except IndexError:
 headcount = [0] * 240
 for _, p in all_personnel_df.iterrows():
     name = p['name']
-    sched = p['schedule']
-    p_shift = p['shift']
-    is_core = p.get('core_manning', True)
+    sched = str(p.get('schedule', '')).strip()
+    p_shift = str(p.get('shift', '')).strip()
+    is_core = bool(p.get('core_manning', True))
+    is_admin_member = (sched.lower() == 'admin' or p_shift.upper() == 'ADMIN')
 
-    if not is_core:
+    # Recruits on structural shifts with Core_Manning=False do not count toward the 9-person minimum,
+    # whereas Admin personnel (e.g., Garver 0700-1500 or on their 24h day) step in to fill manning on weekdays.
+    if not is_core and not is_admin_member:
         continue
 
     presence = [0] * 240
     if p_shift == db_shift:
         presence = [1] * 240
-    elif sched == 'Admin' and target_date.weekday() < 5:
+    elif is_admin_member and target_date.weekday() < 5:
         if is_admin_pm_active(p, target_date.weekday()):
             presence = [1] * 240
         else:
@@ -1320,7 +1339,9 @@ if roster_generation_error:
         for _, ov in overrides_df.iterrows():
             with st.container(border=True):
                 cols = st.columns([4, 1])
-                cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']}")
+                per_tag = ov.get('period', 'FULL')
+                per_disp = "Full Shift" if per_tag == "FULL" else ("0700-1500 (AM)" if per_tag == "AM" else "1500-0700 (PM)")
+                cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']} *({per_disp})*")
                 if cols[1].button("🗑 Delete to Unblock", key=f"err_del_ov_{ov['id']}", use_container_width=True, type="primary"):
                     conn = get_db_connection()
                     try:
@@ -1458,11 +1479,21 @@ if selected_page == "📋 Daily Roster":
                     disp_text = f"**{position}:** {am_name}  >>  {pm_name} ({swap_time})"
 
                 seat_name = f"{rig_name} | {position}"
-                is_locked = seat_name in seat_to_override
-                locked_by = seat_to_override.get(seat_name)
+                locked_am = seat_to_override_am.get(seat_name)
+                locked_pm = seat_to_override_pm.get(seat_name)
+                is_locked = (locked_am is not None) or (locked_pm is not None)
+
+                if locked_am is not None and locked_pm is not None:
+                    lock_prefix = "🔒 "
+                elif locked_am is not None:
+                    lock_prefix = "🔒(AM) "
+                elif locked_pm is not None:
+                    lock_prefix = "🔒(PM) "
+                else:
+                    lock_prefix = ""
 
                 if is_locked:
-                    disp_text = "🔒 " + disp_text
+                    disp_text = lock_prefix + disp_text
 
                 if rig_name == "ARO" and position != "0700-1200 (Float)":
                     st.markdown(disp_text)
@@ -1474,23 +1505,61 @@ if selected_page == "📋 Daily Roster":
                     pop_icon = " 🔒 " if is_locked else " ⚙️ "
                     with c2.popover(pop_icon, use_container_width=True):
                         options = ["-- Auto --", "VACANT"] + on_duty_dropdown_list
-                        if is_locked and locked_by not in options:
-                            options.append(locked_by)
-                        new_val = st.selectbox(
-                            "Lock to person:",
+                        for lb in [locked_am, locked_pm]:
+                            if lb and lb not in options:
+                                options.append(lb)
+
+                        new_am_val = st.selectbox(
+                            "0700-1500 (AM) Lock:",
                             options,
-                            index=options.index(locked_by) if is_locked else 0,
-                            key=f"ov_{rig_name}_{position}"
+                            index=options.index(locked_am) if locked_am in options else 0,
+                            key=f"ov_am_{rig_name}_{position}"
                         )
-                        if st.button("Save", key=f"btn_{rig_name}_{position}", type="primary", use_container_width=True):
+                        new_pm_val = st.selectbox(
+                            "1500-0700 (PM) Lock:",
+                            options,
+                            index=options.index(locked_pm) if locked_pm in options else 0,
+                            key=f"ov_pm_{rig_name}_{position}"
+                        )
+                        if st.button("Save Lock(s)", key=f"btn_{rig_name}_{position}", type="primary", use_container_width=True):
                             conn = get_db_connection()
                             try:
                                 c = conn.cursor()
+                                # Clear existing locks on this seat
                                 c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, seat_name))
-                                if new_val != "-- Auto --":
-                                    if new_val != "VACANT":
-                                        c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, new_val))
-                                    c.execute("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", (target_date_str, new_val, seat_name))
+
+                                # Helper to clear conflicting locks for a person in a given period
+                                def clear_person_period_lock(cur, p_name, target_per):
+                                    if p_name in ["-- Auto --", "VACANT"]:
+                                        return
+                                    if target_per == "FULL":
+                                        cur.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, p_name))
+                                    elif target_per == "AM":
+                                        cur.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s AND Period = 'AM'", (target_date_str, p_name))
+                                        cur.execute("UPDATE Manual_Overrides SET Period = 'PM' WHERE Target_Date = %s AND Name = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, p_name))
+                                    elif target_per == "PM":
+                                        cur.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s AND Period = 'PM'", (target_date_str, p_name))
+                                        cur.execute("UPDATE Manual_Overrides SET Period = 'AM' WHERE Target_Date = %s AND Name = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, p_name))
+
+                                if new_am_val != "-- Auto --" and new_am_val == new_pm_val:
+                                    clear_person_period_lock(c, new_am_val, "FULL")
+                                    c.execute(
+                                        "INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, 'FULL')",
+                                        (target_date_str, new_am_val, seat_name)
+                                    )
+                                else:
+                                    if new_am_val != "-- Auto --":
+                                        clear_person_period_lock(c, new_am_val, "AM")
+                                        c.execute(
+                                            "INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, 'AM')",
+                                            (target_date_str, new_am_val, seat_name)
+                                        )
+                                    if new_pm_val != "-- Auto --":
+                                        clear_person_period_lock(c, new_pm_val, "PM")
+                                        c.execute(
+                                            "INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, 'PM')",
+                                            (target_date_str, new_pm_val, seat_name)
+                                        )
                                 conn.commit()
                             finally:
                                 conn.close()
@@ -1558,19 +1627,34 @@ if selected_page == "📋 Daily Roster":
                 c = conn.cursor()
                 c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s", (target_date_str,))
                 inserts = []
-                seen_names = set()
+                seen_am = set()
+                seen_pm = set()
                 for rig, seats in am_roster.items():
                     for pos, am_name in seats.items():
                         seat_name = f"{rig} | {pos}"
-                        if seat_name in all_seats_list:
-                            if am_name:
-                                clean_name = clean_display_name(am_name)
-                                if clean_name not in seen_names or clean_name == "VACANT":
-                                    inserts.append((target_date_str, clean_name, seat_name))
-                                    if clean_name != "VACANT":
-                                        seen_names.add(clean_name)
+                        if seat_name not in all_seats_list:
+                            continue
+                        pm_name = pm_roster[rig][pos]
+                        clean_am = clean_display_name(am_name) if am_name else ""
+                        clean_pm = clean_display_name(pm_name) if pm_name else ""
+
+                        if clean_am and clean_am == clean_pm:
+                            if (clean_am not in seen_am and clean_am not in seen_pm) or clean_am == "VACANT":
+                                inserts.append((target_date_str, clean_am, seat_name, "FULL"))
+                                if clean_am != "VACANT":
+                                    seen_am.add(clean_am)
+                                    seen_pm.add(clean_am)
+                        else:
+                            if clean_am and (clean_am not in seen_am or clean_am == "VACANT"):
+                                inserts.append((target_date_str, clean_am, seat_name, "AM"))
+                                if clean_am != "VACANT":
+                                    seen_am.add(clean_am)
+                            if clean_pm and (clean_pm not in seen_pm or clean_pm == "VACANT"):
+                                inserts.append((target_date_str, clean_pm, seat_name, "PM"))
+                                if clean_pm != "VACANT":
+                                    seen_pm.add(clean_pm)
                 if inserts:
-                    c.executemany("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", inserts)
+                    c.executemany("INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, %s)", inserts)
                 conn.commit()
             finally:
                 conn.close()
@@ -1655,10 +1739,11 @@ if selected_page == "📋 Daily Roster":
                         ov_df.columns = [c.lower() for c in ov_df.columns]
                         w_df.columns = [c.lower() for c in w_df.columns]
 
-                        p_ov_dict = {}
-                        if not ov_df.empty:
-                            for _, ov_r in ov_df.iterrows():
-                                p_ov_dict[ov_r['seat']] = ov_r['name']
+                        if 'period' not in ov_df.columns:
+                            ov_df['period'] = 'FULL'
+                        else:
+                            ov_df['period'] = ov_df['period'].fillna('FULL')
+                        p_ov_am, p_ov_pm = build_override_maps(ov_df)
                         p_w_dict = dict(zip(w_df['watch_period'], w_df['name'])) if not w_df.empty else {}
 
                         if p_dt.weekday() < 5:
@@ -1770,7 +1855,7 @@ if selected_page == "📋 Daily Roster":
                         p_pm_c.sort(key=lambda x: x["Seniority"])
 
                         try:
-                            p_am_r_raw, p_pm_r_raw = build_roster_assignment(p_am_c, p_pm_c, p_ov_dict, temp_stats, p_p_leaves)
+                            p_am_r_raw, p_pm_r_raw = build_roster_assignment(p_am_c, p_pm_c, p_ov_am, p_ov_pm, temp_stats, p_p_leaves)
                             p_am_r = apply_cross_staffing_and_watches(p_am_r_raw, p_w_dict, oos_list)
                             p_pm_r = apply_cross_staffing_and_watches(p_pm_r_raw, p_w_dict, oos_list)
 
@@ -1832,19 +1917,33 @@ if selected_page == "📋 Daily Roster":
                                 cur_proj.executemany("INSERT INTO Position_Log (Target_Date, Name, Position, Hours) VALUES (%s, %s, %s, %s)", records)
 
                             ov_inserts = []
-                            seen_names = set()
+                            seen_am = set()
+                            seen_pm = set()
                             for rig, seats in p_am_r.items():
                                 for pos, am_name in seats.items():
                                     seat_name = f"{rig} | {pos}"
-                                    if seat_name in all_seats_list:
-                                        if am_name:
-                                            clean_name = clean_display_name(am_name)
-                                            if clean_name not in seen_names or clean_name == "VACANT":
-                                                ov_inserts.append((p_str, clean_name, seat_name))
-                                                if clean_name != "VACANT":
-                                                    seen_names.add(clean_name)
+                                    if seat_name not in all_seats_list:
+                                        continue
+                                    pm_name = p_pm_r[rig][pos]
+                                    clean_am = clean_display_name(am_name) if am_name else ""
+                                    clean_pm = clean_display_name(pm_name) if pm_name else ""
+                                    if clean_am and clean_am == clean_pm:
+                                        if (clean_am not in seen_am and clean_am not in seen_pm) or clean_am == "VACANT":
+                                            ov_inserts.append((p_str, clean_am, seat_name, "FULL"))
+                                            if clean_am != "VACANT":
+                                                seen_am.add(clean_am)
+                                                seen_pm.add(clean_am)
+                                    else:
+                                        if clean_am and (clean_am not in seen_am or clean_am == "VACANT"):
+                                            ov_inserts.append((p_str, clean_am, seat_name, "AM"))
+                                            if clean_am != "VACANT":
+                                                seen_am.add(clean_am)
+                                        if clean_pm and (clean_pm not in seen_pm or clean_pm == "VACANT"):
+                                            ov_inserts.append((p_str, clean_pm, seat_name, "PM"))
+                                            if clean_pm != "VACANT":
+                                                seen_pm.add(clean_pm)
                             if ov_inserts:
-                                cur_proj.executemany("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", ov_inserts)
+                                cur_proj.executemany("INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, %s)", ov_inserts)
 
                             success_count += 1
                         except Exception as proj_err:
@@ -1865,20 +1964,53 @@ if selected_page == "📋 Daily Roster":
         ov_col1, ov_col2 = st.columns([1, 1])
         with ov_col1:
             with st.form("override_form", clear_on_submit=True):
-                o_name = st.selectbox("Personnel", on_duty_dropdown_list, key="ov_n")
+                o_name = st.selectbox("Personnel", ["VACANT"] + on_duty_dropdown_list, key="ov_n")
                 o_seat = st.selectbox("Assign to Seat", all_seats_list, key="ov_s")
+                period_labels = {
+                    "FULL": "Full Shift (0700-0700)",
+                    "AM": "Partial: 0700-1500 (AM Only)",
+                    "PM": "Partial: 1500-0700 (PM Remainder)"
+                }
+                o_period = st.selectbox(
+                    "Shift Portion",
+                    options=["FULL", "AM", "PM"],
+                    format_func=lambda x: period_labels[x],
+                    key="ov_p"
+                )
 
                 if st.form_submit_button("Lock Seat Override", type="primary"):
                     conn = get_db_connection()
                     try:
                         c = conn.cursor()
-                        c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, o_seat))
-                        c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
-                        c.execute("INSERT INTO Manual_Overrides (Target_Date, Name, Seat) VALUES (%s, %s, %s)", (target_date_str, o_name, o_seat))
+                        # Remove conflicting seat lock for the selected period
+                        if o_period == "FULL":
+                            c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, o_seat))
+                        elif o_period == "AM":
+                            c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s AND Period = 'AM'", (target_date_str, o_seat))
+                            c.execute("UPDATE Manual_Overrides SET Period = 'PM' WHERE Target_Date = %s AND Seat = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, o_seat))
+                        elif o_period == "PM":
+                            c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s AND Period = 'PM'", (target_date_str, o_seat))
+                            c.execute("UPDATE Manual_Overrides SET Period = 'AM' WHERE Target_Date = %s AND Seat = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, o_seat))
+
+                        # Remove conflicting person lock for the selected period (so a person can be locked in one seat AM and another seat PM)
+                        if o_name != "VACANT":
+                            if o_period == "FULL":
+                                c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
+                            elif o_period == "AM":
+                                c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s AND Period = 'AM'", (target_date_str, o_name))
+                                c.execute("UPDATE Manual_Overrides SET Period = 'PM' WHERE Target_Date = %s AND Name = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, o_name))
+                            elif o_period == "PM":
+                                c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s AND Period = 'PM'", (target_date_str, o_name))
+                                c.execute("UPDATE Manual_Overrides SET Period = 'AM' WHERE Target_Date = %s AND Name = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, o_name))
+
+                        c.execute(
+                            "INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, %s)",
+                            (target_date_str, o_name, o_seat, o_period)
+                        )
                         conn.commit()
                     finally:
                         conn.close()
-                    st.success(f"Locked {o_name} into {o_seat}.")
+                    st.success(f"Locked {o_name} into {o_seat} ({period_labels[o_period]}).")
                     time.sleep(1)
                     st.rerun()
 
@@ -1889,7 +2021,9 @@ if selected_page == "📋 Daily Roster":
                 for _, ov in overrides_df.iterrows():
                     with st.container(border=True):
                         cols = st.columns([4, 1])
-                        cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']}")
+                        per_tag = str(ov.get('period') or 'FULL').upper()
+                        per_badge = "Full Shift" if per_tag == "FULL" else ("0700-1500 (AM)" if per_tag == "AM" else "1500-0700 (PM)")
+                        cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']} &nbsp; `[{per_badge}]`")
                         if cols[1].button("🗑", key=f"del_ov_{ov['id']}", use_container_width=True):
                             conn = get_db_connection()
                             try:
@@ -2963,7 +3097,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                         "Position_Log": "SELECT id, target_date, name, position, hours FROM Position_Log",
                         "OT_Archive": "SELECT id, archive_stamp, notes, name, start_hours, hours_applied, status FROM OT_Archive",
                         "ARO_Watch": "SELECT id, target_date, watch_period, name FROM ARO_Watch",
-                        "Manual_Overrides": "SELECT id, target_date, name, seat FROM Manual_Overrides",
+                        "Manual_Overrides": "SELECT id, target_date, name, seat, period FROM Manual_Overrides",
                         "Station_Events": "SELECT id, target_date, event_type, description, start_time, end_time, instructor FROM Station_Events",
                         "Apparatus": "SELECT Rig_Name, Status FROM Apparatus"
                     }
