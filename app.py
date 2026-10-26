@@ -223,12 +223,167 @@ selected_page = st.sidebar.radio("Go to:", nav_options, label_visibility="collap
 
 
 # --- 2. POSTGRES DATABASE CLOUD CONNECTION & CACHED INITIALIZATION ---
+MASTER_CERT_DATA = [{'first_name': 'Dennis', 'last_name': 'Atkins', 'hire_date': '1998-07-06', 'emr': True, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': True, 'instructor_1': True, 'instructor_2': True, 'instructor_3': False, 'officer_1': True, 'officer_2': True, 'officer_3': True, 'officer_4': False}, {'first_name': 'Robert', 'last_name': 'Bissett', 'hire_date': '2011-01-16', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': False, 'inspector_2': False, 'inspector_3': False, 'instructor_1': True, 'instructor_2': False, 'instructor_3': False, 'officer_1': True, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Lucas', 'last_name': 'Blom', 'hire_date': '2008-08-31', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': False, 'inspector_2': False, 'inspector_3': False, 'instructor_1': True, 'instructor_2': False, 'instructor_3': False, 'officer_1': False, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Stephen', 'last_name': 'Buzzard', 'hire_date': '2000-12-04', 'emr': False, 'emt': False, 'paramedic': True, 'inspector_1': True, 'inspector_2': True, 'inspector_3': True, 'instructor_1': True, 'instructor_2': True, 'instructor_3': False, 'officer_1': True, 'officer_2': True, 'officer_3': True, 'officer_4': True}, {'first_name': 'Brian', 'last_name': 'Conrad', 'hire_date': '2003-07-29', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': False, 'inspector_2': False, 'inspector_3': False, 'instructor_1': False, 'instructor_2': False, 'instructor_3': False, 'officer_1': False, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Dusty', 'last_name': 'Downing', 'hire_date': '2000-03-12', 'emr': True, 'emt': False, 'paramedic': False, 'inspector_1': False, 'inspector_2': False, 'inspector_3': False, 'instructor_1': True, 'instructor_2': False, 'instructor_3': False, 'officer_1': True, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Dane', 'last_name': 'Eagle', 'hire_date': '2023-06-20', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': True, 'inspector_2': False, 'inspector_3': False, 'instructor_1': True, 'instructor_2': False, 'instructor_3': False, 'officer_1': True, 'officer_2': True, 'officer_3': False, 'officer_4': False}, {'first_name': 'Aaron', 'last_name': 'Elswick', 'hire_date': '2007-08-20', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': True, 'inspector_2': False, 'inspector_3': False, 'instructor_1': True, 'instructor_2': True, 'instructor_3': False, 'officer_1': True, 'officer_2': True, 'officer_3': False, 'officer_4': False}, {'first_name': 'Kenneth', 'last_name': 'Finch', 'hire_date': '2000-12-04', 'emr': True, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': False, 'instructor_1': True, 'instructor_2': True, 'instructor_3': True, 'officer_1': True, 'officer_2': True, 'officer_3': True, 'officer_4': True}, {'first_name': 'Zachary', 'last_name': 'Garber', 'hire_date': '2021-03-29', 'emr': False, 'emt': False, 'paramedic': False, 'inspector_1': False, 'inspector_2': False, 'inspector_3': False, 'instructor_1': False, 'instructor_2': False, 'instructor_3': False, 'officer_1': False, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Lewis', 'last_name': 'Garver', 'hire_date': '1998-07-06', 'emr': True, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': True, 'instructor_1': False, 'instructor_2': False, 'instructor_3': False, 'officer_1': False, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Jon', 'last_name': 'Guilliams', 'hire_date': '2004-08-09', 'emr': True, 'emt': False, 'paramedic': False, 'inspector_1': False, 'inspector_2': False, 'inspector_3': False, 'instructor_1': True, 'instructor_2': False, 'instructor_3': False, 'officer_1': False, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Christopher', 'last_name': 'Hurst', 'hire_date': '2009-07-05', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': False, 'instructor_1': True, 'instructor_2': True, 'instructor_3': False, 'officer_1': True, 'officer_2': True, 'officer_3': False, 'officer_4': False}, {'first_name': 'Gideon', 'last_name': 'Johnson', 'hire_date': '2026-04-06', 'emr': True, 'emt': False, 'paramedic': False, 'inspector_1': False, 'inspector_2': False, 'inspector_3': False, 'instructor_1': True, 'instructor_2': False, 'instructor_3': False, 'officer_1': False, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'John', 'last_name': 'Klaus', 'hire_date': '1994-08-07', 'emr': False, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': False, 'inspector_3': False, 'instructor_1': True, 'instructor_2': True, 'instructor_3': False, 'officer_1': True, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Erik', 'last_name': 'Lambert', 'hire_date': '2007-09-21', 'emr': True, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': False, 'instructor_1': True, 'instructor_2': False, 'instructor_3': False, 'officer_1': True, 'officer_2': True, 'officer_3': False, 'officer_4': False}, {'first_name': 'Danny', 'last_name': 'Lee', 'hire_date': '2012-01-15', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': False, 'instructor_1': True, 'instructor_2': True, 'instructor_3': False, 'officer_1': True, 'officer_2': True, 'officer_3': True, 'officer_4': False}, {'first_name': 'Derek', 'last_name': 'Lotz', 'hire_date': None, 'emr': False, 'emt': False, 'paramedic': False, 'inspector_1': False, 'inspector_2': False, 'inspector_3': False, 'instructor_1': False, 'instructor_2': False, 'instructor_3': False, 'officer_1': False, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'John', 'last_name': 'Martin', 'hire_date': '2025-10-06', 'emr': False, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': True, 'instructor_1': True, 'instructor_2': True, 'instructor_3': True, 'officer_1': True, 'officer_2': True, 'officer_3': True, 'officer_4': True}, {'first_name': 'Dennis', 'last_name': 'McJunkin', 'hire_date': '1998-07-06', 'emr': True, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': True, 'instructor_1': True, 'instructor_2': True, 'instructor_3': True, 'officer_1': True, 'officer_2': True, 'officer_3': True, 'officer_4': True}, {'first_name': 'Christopher', 'last_name': 'McKee', 'hire_date': '2000-03-13', 'emr': True, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': False, 'inspector_3': False, 'instructor_1': True, 'instructor_2': False, 'instructor_3': False, 'officer_1': True, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Kevin', 'last_name': 'McNamara', 'hire_date': '2005-06-13', 'emr': True, 'emt': False, 'paramedic': False, 'inspector_1': False, 'inspector_2': False, 'inspector_3': False, 'instructor_1': False, 'instructor_2': False, 'instructor_3': False, 'officer_1': False, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Jacob', 'last_name': 'Mefford', 'hire_date': '2020-01-20', 'emr': True, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': False, 'inspector_3': False, 'instructor_1': True, 'instructor_2': False, 'instructor_3': False, 'officer_1': True, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'James', 'last_name': 'Moeller', 'hire_date': '2000-02-13', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': False, 'instructor_1': True, 'instructor_2': False, 'instructor_3': False, 'officer_1': True, 'officer_2': True, 'officer_3': False, 'officer_4': False}, {'first_name': 'Matthew', 'last_name': 'Moore', 'hire_date': '2000-12-04', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': False, 'instructor_1': False, 'instructor_2': False, 'instructor_3': False, 'officer_1': False, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Jerry', 'last_name': 'Napier', 'hire_date': '2025-09-07', 'emr': False, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': False, 'inspector_3': False, 'instructor_1': True, 'instructor_2': False, 'instructor_3': False, 'officer_1': True, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': "O'Neal", 'last_name': 'Payne', 'hire_date': '2020-03-01', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': False, 'inspector_2': False, 'inspector_3': False, 'instructor_1': False, 'instructor_2': False, 'instructor_3': False, 'officer_1': False, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Douglas', 'last_name': 'Proffitt', 'hire_date': '2004-07-11', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': False, 'instructor_1': False, 'instructor_2': False, 'instructor_3': False, 'officer_1': True, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Scott', 'last_name': 'Rickord', 'hire_date': '2002-12-30', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': False, 'inspector_2': False, 'inspector_3': False, 'instructor_1': False, 'instructor_2': False, 'instructor_3': False, 'officer_1': False, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Michael', 'last_name': 'Riley', 'hire_date': '2020-01-12', 'emr': False, 'emt': False, 'paramedic': True, 'inspector_1': True, 'inspector_2': True, 'inspector_3': False, 'instructor_1': True, 'instructor_2': True, 'instructor_3': False, 'officer_1': True, 'officer_2': True, 'officer_3': False, 'officer_4': False}, {'first_name': 'Matthew', 'last_name': 'Roach', 'hire_date': '1994-08-07', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': False, 'instructor_1': True, 'instructor_2': True, 'instructor_3': False, 'officer_1': True, 'officer_2': True, 'officer_3': True, 'officer_4': False}, {'first_name': 'Paul', 'last_name': 'Roach', 'hire_date': '2005-11-13', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': True, 'instructor_1': True, 'instructor_2': True, 'instructor_3': True, 'officer_1': True, 'officer_2': True, 'officer_3': True, 'officer_4': True}, {'first_name': 'Michael', 'last_name': 'Ross', 'hire_date': '2004-06-27', 'emr': True, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': False, 'instructor_1': True, 'instructor_2': False, 'instructor_3': False, 'officer_1': True, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Adam', 'last_name': 'Schaefer', 'hire_date': '2025-06-30', 'emr': False, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': False, 'instructor_1': True, 'instructor_2': True, 'instructor_3': False, 'officer_1': True, 'officer_2': True, 'officer_3': False, 'officer_4': False}, {'first_name': 'Chad', 'last_name': 'Slonaker', 'hire_date': '2008-07-21', 'emr': False, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': False, 'instructor_1': True, 'instructor_2': True, 'instructor_3': False, 'officer_1': True, 'officer_2': True, 'officer_3': True, 'officer_4': False}, {'first_name': 'Jakob', 'last_name': 'Staggs', 'hire_date': '2025-07-25', 'emr': False, 'emt': True, 'paramedic': False, 'inspector_1': False, 'inspector_2': False, 'inspector_3': False, 'instructor_1': True, 'instructor_2': False, 'instructor_3': False, 'officer_1': False, 'officer_2': False, 'officer_3': False, 'officer_4': False}, {'first_name': 'Mark', 'last_name': 'White', 'hire_date': None, 'emr': False, 'emt': False, 'paramedic': False, 'inspector_1': True, 'inspector_2': True, 'inspector_3': False, 'instructor_1': True, 'instructor_2': True, 'instructor_3': True, 'officer_1': True, 'officer_2': True, 'officer_3': True, 'officer_4': True}]
+
+
+def match_cert_record(db_name, db_shift, records):
+    """
+    Matches a Personnel row (Name, Shift) from the database to a record from the
+    Certifications spreadsheet. Handles last-name-only, full names, initials,
+    spelling variations (O'Neal vs O'Neil), and duplicate last names (Matthew vs Paul Roach).
+    """
+    clean = str(db_name).strip().lower()
+    clean_no_punct = clean.replace(".", "").replace(",", "").replace("'", "").strip()
+    shift_up = str(db_shift or "").strip().upper()
+
+    # Special disambiguation for Roach (Matthew Roach vs Paul Roach)
+    if "roach" in clean_no_punct:
+        for r in records:
+            if r["last_name"].lower() != "roach":
+                continue
+            fn = r["first_name"].lower()
+            if fn == "matthew" and (
+                clean_no_punct in ["m roach", "matthew roach", "matt roach", "roach m", "roach matthew", "roach matt"]
+                or (clean_no_punct == "roach" and shift_up == "B")
+            ):
+                return r
+            if fn == "paul" and (
+                clean_no_punct in ["p roach", "paul roach", "roach p", "roach paul"]
+                or (clean_no_punct == "roach" and shift_up != "B")
+            ):
+                return r
+        return None
+
+    for r in records:
+        first = r["first_name"].strip().lower()
+        last = r["last_name"].strip().lower()
+        first_np = first.replace("'", "").replace(".", "")
+        last_np = last.replace("'", "").replace(".", "")
+        f_init = first_np[0] if first_np else ""
+
+        candidates = {
+            last,
+            last_np,
+            f"{first} {last}",
+            f"{first_np} {last_np}",
+            f"{f_init} {last_np}",
+            f"{last_np} {first_np}",
+            f"{last_np} {f_init}",
+        }
+        # Handle O'Neal / O'Neil Payne variations
+        if last_np == "payne":
+            candidates.update({"oneil payne", "oneal payne", "o payne", "payne"})
+
+        if clean_no_punct in candidates or last_np in clean_no_punct.split():
+            return r
+
+    return None
+
+
+def sync_personnel_certifications(conn, records=None):
+    """
+    Updates existing Personnel rows in Postgres with Hire_Date and all certification flags
+    (EMR, EMT, Paramedic, Inspector 1-3, Instructor 1-3, Officer 1-4) from records.
+    Returns the number of updated personnel rows.
+    """
+    if records is None:
+        records = MASTER_CERT_DATA
+
+    df_p = pd.read_sql("SELECT Name, Shift, Hire_Date FROM Personnel", conn)
+    if df_p.empty:
+        return 0
+
+    df_p.columns = [c.lower() for c in df_p.columns]
+    updated_count = 0
+
+    with conn.cursor() as c:
+        for _, row in df_p.iterrows():
+            db_name = row['name']
+            db_shift = row.get('shift', '')
+            curr_hire = row.get('hire_date', '2020-01-01')
+
+            matched = match_cert_record(db_name, db_shift, records)
+            if not matched:
+                continue
+
+            new_hire = matched["hire_date"] if matched.get("hire_date") else (curr_hire or '2020-01-01')
+
+            c.execute(
+                """UPDATE Personnel SET
+                    Hire_Date = %s,
+                    EMR = %s,
+                    EMT = %s,
+                    Paramedic = %s,
+                    Inspector = %s,
+                    Inspector_2 = %s,
+                    Inspector_3 = %s,
+                    Instructor = %s,
+                    Instructor_2 = %s,
+                    Instructor_3 = %s,
+                    Officer_1 = %s,
+                    Officer_2 = %s,
+                    Officer_3 = %s,
+                    Officer_4 = %s
+                WHERE Name = %s AND Shift = %s""",
+                (
+                    new_hire,
+                    bool(matched["emr"]),
+                    bool(matched["emt"]),
+                    bool(matched["paramedic"]),
+                    bool(matched["inspector_1"]),
+                    bool(matched["inspector_2"]),
+                    bool(matched["inspector_3"]),
+                    bool(matched["instructor_1"]),
+                    bool(matched["instructor_2"]),
+                    bool(matched["instructor_3"]),
+                    bool(matched["officer_1"]),
+                    bool(matched["officer_2"]),
+                    bool(matched["officer_3"]),
+                    bool(matched["officer_4"]),
+                    db_name,
+                    db_shift
+                )
+            )
+            updated_count += 1
+
+    conn.commit()
+    return updated_count
+
 def get_db_connection():
     return psycopg2.connect(DB_URI)
 
 
+# --- AUTO SHIFT-UP ENGINE ---
+def recalculate_ff_seniority():
+    conn_rec = get_db_connection()
+    try:
+        df_rec = pd.read_sql("SELECT * FROM Personnel", conn_rec)
+        df_rec.columns = [c.lower() for c in df_rec.columns]
+        df_rec['hire_date'] = df_rec['hire_date'].fillna('2020-01-01')
+        if 'tie_breaker' not in df_rec.columns:
+            df_rec['tie_breaker'] = 9999
+        else:
+            df_rec['tie_breaker'] = pd.to_numeric(df_rec['tie_breaker'], errors='coerce').fillna(9999).astype(int)
+
+        ffs = df_rec[df_rec['seniority'] > 10].copy()
+        ffs = ffs.sort_values(by=['hire_date', 'tie_breaker', 'seniority'], ascending=[True, True, True])
+
+        updates = []
+        current_sen = 11
+        for _, row in ffs.iterrows():
+            updates.append((current_sen, row['name']))
+            current_sen += 1
+
+        if updates:
+            with conn_rec.cursor() as cur:
+                cur.executemany("UPDATE Personnel SET Seniority = %s WHERE Name = %s", updates)
+            conn_rec.commit()
+    finally:
+        conn_rec.close()
+
+
 @st.cache_resource
-def init_db(_schema_v=2):
+def init_db(_schema_v=3):
     conn = get_db_connection()
     try:
         with conn.cursor() as c:
@@ -247,10 +402,11 @@ def init_db(_schema_v=2):
             )""")
             c.execute("""CREATE TABLE IF NOT EXISTS Personnel (
                 Name TEXT, Seniority INTEGER, Core_Manning BOOLEAN, Schedule TEXT, Shift TEXT,
-                Officer_1 BOOLEAN DEFAULT FALSE, Officer_2 BOOLEAN DEFAULT FALSE, Officer_3 BOOLEAN DEFAULT FALSE,
-                Inspector BOOLEAN DEFAULT FALSE, Inspector_2 BOOLEAN DEFAULT FALSE,
-                Instructor BOOLEAN DEFAULT FALSE, Instructor_2 BOOLEAN DEFAULT FALSE,
-                EMR BOOLEAN DEFAULT FALSE, EMT BOOLEAN DEFAULT FALSE,
+                Officer_1 BOOLEAN DEFAULT FALSE, Officer_2 BOOLEAN DEFAULT FALSE,
+                Officer_3 BOOLEAN DEFAULT FALSE, Officer_4 BOOLEAN DEFAULT FALSE,
+                Inspector BOOLEAN DEFAULT FALSE, Inspector_2 BOOLEAN DEFAULT FALSE, Inspector_3 BOOLEAN DEFAULT FALSE,
+                Instructor BOOLEAN DEFAULT FALSE, Instructor_2 BOOLEAN DEFAULT FALSE, Instructor_3 BOOLEAN DEFAULT FALSE,
+                EMR BOOLEAN DEFAULT FALSE, EMT BOOLEAN DEFAULT FALSE, Paramedic BOOLEAN DEFAULT FALSE,
                 Hire_Date TEXT DEFAULT '2020-01-01', Tie_Breaker INTEGER DEFAULT 9999,
                 Admin_24h_Day TEXT DEFAULT 'None'
             )""")
@@ -276,17 +432,24 @@ def init_db(_schema_v=2):
             c.execute("""CREATE TABLE IF NOT EXISTS Apparatus (
                 Rig_Name TEXT PRIMARY KEY, Status TEXT
             )""")
+            c.execute("""CREATE TABLE IF NOT EXISTS System_Migrations (
+                Migration_Key TEXT PRIMARY KEY, Applied_At TEXT
+            )""")
 
             # Ensure backward-compatible schema migrations for existing Personnel tables
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_1 BOOLEAN DEFAULT FALSE")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_2 BOOLEAN DEFAULT FALSE")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_3 BOOLEAN DEFAULT FALSE")
+            c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_4 BOOLEAN DEFAULT FALSE")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Inspector BOOLEAN DEFAULT FALSE")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Inspector_2 BOOLEAN DEFAULT FALSE")
+            c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Inspector_3 BOOLEAN DEFAULT FALSE")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Instructor BOOLEAN DEFAULT FALSE")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Instructor_2 BOOLEAN DEFAULT FALSE")
+            c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Instructor_3 BOOLEAN DEFAULT FALSE")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS EMR BOOLEAN DEFAULT FALSE")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS EMT BOOLEAN DEFAULT FALSE")
+            c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Paramedic BOOLEAN DEFAULT FALSE")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Hire_Date TEXT DEFAULT '2020-01-01'")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Tie_Breaker INTEGER DEFAULT 9999")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Admin_24h_Day TEXT DEFAULT 'None'")
@@ -304,9 +467,23 @@ def init_db(_schema_v=2):
                 ]
                 c.executemany("INSERT INTO Apparatus (Rig_Name, Status) VALUES (%s, %s)", default_rigs)
 
+            # Check if master certification sheet sync has been applied
+            c.execute("SELECT COUNT(*) FROM System_Migrations WHERE Migration_Key = 'cert_sheet_sync_v1'")
+            already_synced = (c.fetchone()[0] > 0)
+
         conn.commit()
+
+        if not already_synced:
+            sync_personnel_certifications(conn, MASTER_CERT_DATA)
+            with conn.cursor() as c:
+                c.execute(
+                    "INSERT INTO System_Migrations (Migration_Key, Applied_At) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    ("cert_sheet_sync_v1", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                )
+            conn.commit()
     finally:
         conn.close()
+    recalculate_ff_seniority()
     return True
 
 
@@ -365,33 +542,6 @@ default_rig_names = ["CH-222", "R-221", "E-221", "Tanker", "Crash-1", "Crash-3",
 temp_rigs = [r for r in app_status_dict.keys() if r not in default_rig_names]
 
 
-# --- AUTO SHIFT-UP ENGINE ---
-def recalculate_ff_seniority():
-    conn_rec = get_db_connection()
-    try:
-        df_rec = pd.read_sql("SELECT * FROM Personnel", conn_rec)
-        df_rec.columns = [c.lower() for c in df_rec.columns]
-        df_rec['hire_date'] = df_rec['hire_date'].fillna('2020-01-01')
-        if 'tie_breaker' not in df_rec.columns:
-            df_rec['tie_breaker'] = 9999
-        else:
-            df_rec['tie_breaker'] = pd.to_numeric(df_rec['tie_breaker'], errors='coerce').fillna(9999).astype(int)
-
-        ffs = df_rec[df_rec['seniority'] > 10].copy()
-        ffs = ffs.sort_values(by=['hire_date', 'tie_breaker', 'seniority'], ascending=[True, True, True])
-
-        updates = []
-        current_sen = 11
-        for _, row in ffs.iterrows():
-            updates.append((current_sen, row['name']))
-            current_sen += 1
-
-        if updates:
-            with conn_rec.cursor() as cur:
-                cur.executemany("UPDATE Personnel SET Seniority = %s WHERE Name = %s", updates)
-            conn_rec.commit()
-    finally:
-        conn_rec.close()
 
 
 personnel_info = {}
@@ -406,12 +556,16 @@ for _, r in all_personnel_df.iterrows():
         'Officer_1': bool(r.get('officer_1', False)),
         'Officer_2': bool(r.get('officer_2', False)),
         'Officer_3': bool(r.get('officer_3', False)),
+        'Officer_4': bool(r.get('officer_4', False)),
         'Inspector': bool(r.get('inspector', False)),
         'Inspector_2': bool(r.get('inspector_2', False)),
+        'Inspector_3': bool(r.get('inspector_3', False)),
         'Instructor': bool(r.get('instructor', False)),
         'Instructor_2': bool(r.get('instructor_2', False)),
+        'Instructor_3': bool(r.get('instructor_3', False)),
         'EMR': bool(r.get('emr', False)),
         'EMT': bool(r.get('emt', False)),
+        'Paramedic': bool(r.get('paramedic', False)),
         'Admin_24h_Day': r.get('admin_24h_day', 'None')
     }
     if r['schedule'] == 'Admin':
@@ -2371,17 +2525,86 @@ elif selected_page == "✍️ Data Entry" and is_admin:
         display_cols = [
             'seniority', 'name', 'shift', 'schedule', 'admin_24h_day',
             'hire_date', 'tie_breaker', 'core_manning',
-            'officer_1', 'officer_2', 'officer_3',
-            'inspector', 'inspector_2',
-            'instructor', 'instructor_2',
-            'emr', 'emt'
+            'emr', 'emt', 'paramedic',
+            'officer_1', 'officer_2', 'officer_3', 'officer_4',
+            'inspector', 'inspector_2', 'inspector_3',
+            'instructor', 'instructor_2', 'instructor_3'
         ]
         for c_name in display_cols:
             if c_name not in display_df.columns:
                 display_df[c_name] = None
 
         display_df = display_df[display_cols].sort_values(by='seniority').reset_index(drop=True)
-        st.dataframe(display_df, use_container_width=True, hide_index=True, height=300)
+        st.dataframe(display_df, use_container_width=True, hide_index=True, height=320)
+
+        with st.expander("🔄 Sync / Import Certifications & Hire Dates from Spreadsheet"):
+            sync_c1, sync_c2 = st.columns(2)
+            with sync_c1:
+                st.markdown("**Built-In Master Certifications Sheet (37 Personnel)**")
+                st.caption("Automatically syncs Hire Dates, OHEMS (EMR/EMT/Paramedic), Inspector 1–3, Instructor 1–3, and Officer 1–4 for all matching personnel.")
+                if st.button("🔄 Re-Sync from Built-In Master Sheet", type="secondary", use_container_width=True):
+                    conn = get_db_connection()
+                    try:
+                        cnt = sync_personnel_certifications(conn, MASTER_CERT_DATA)
+                    finally:
+                        conn.close()
+                    recalculate_ff_seniority()
+                    st.success(f"✅ Synced certifications & hire dates for {cnt} personnel records and recalculated seniority!")
+                    time.sleep(1.5)
+                    st.rerun()
+            with sync_c2:
+                st.markdown("**Upload Updated Certifications Excel File (`.xlsx`)**")
+                cert_upload = st.file_uploader("Upload Certifications Sheet", type=["xlsx"], key="cert_xlsx_upload", label_visibility="collapsed")
+                if cert_upload is not None:
+                    if st.button("📥 Import Uploaded Certifications Sheet", type="primary", use_container_width=True):
+                        try:
+                            up_df = pd.read_excel(cert_upload)
+                            up_records = []
+                            for _, r in up_df.iterrows():
+                                first = str(r.get('firstName', '')).strip()
+                                last = str(r.get('lastName', '')).strip()
+                                if not last or last.lower() == 'nan':
+                                    continue
+                                hd = r.get('hireDate')
+                                if isinstance(hd, (datetime.datetime, datetime.date, pd.Timestamp)):
+                                    hire_str = hd.strftime("%Y-%m-%d")
+                                else:
+                                    hire_str = None
+                                ohems = str(r.get('ohems', '')).strip() if pd.notna(r.get('ohems')) else ""
+                                def _is_one(v):
+                                    try:
+                                        return bool(pd.notna(v) and float(v) == 1.0)
+                                    except Exception:
+                                        return False
+                                up_records.append({
+                                    "first_name": first,
+                                    "last_name": last,
+                                    "hire_date": hire_str,
+                                    "emr": ohems.upper() == "EMR",
+                                    "emt": ohems.upper() == "EMT",
+                                    "paramedic": ohems.upper() == "PARAMEDIC",
+                                    "inspector_1": _is_one(r.get('Inspector 1')),
+                                    "inspector_2": _is_one(r.get('Inspector 2')),
+                                    "inspector_3": _is_one(r.get('Inspector 3')),
+                                    "instructor_1": _is_one(r.get('Instructor 1')),
+                                    "instructor_2": _is_one(r.get('Instructor 2')),
+                                    "instructor_3": _is_one(r.get('Instructor 3')),
+                                    "officer_1": _is_one(r.get('Officer 1')),
+                                    "officer_2": _is_one(r.get('Officer 2')),
+                                    "officer_3": _is_one(r.get('Officer 3')),
+                                    "officer_4": _is_one(r.get('Officer 4')),
+                                })
+                            conn = get_db_connection()
+                            try:
+                                cnt = sync_personnel_certifications(conn, up_records)
+                            finally:
+                                conn.close()
+                            recalculate_ff_seniority()
+                            st.success(f"✅ Imported and synced {cnt} personnel records from uploaded sheet!")
+                            time.sleep(1.5)
+                            st.rerun()
+                        except Exception as up_err:
+                            st.error(f"Error importing sheet: {up_err}")
 
         st.divider()
         col_add, col_edit = st.columns(2)
@@ -2394,7 +2617,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 a_hire = h_col1.date_input(
                     "Hire Date / Seniority Date",
                     value=datetime.date.today(),
-                    min_value=datetime.date(1995, 1, 1),
+                    min_value=datetime.date(1990, 1, 1),
                     max_value=datetime.date.today() + datetime.timedelta(days=365)
                 )
                 a_tie = h_col2.number_input(
@@ -2413,16 +2636,23 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 a_core = st.checkbox("Counts Towards Minimum Manning (Core)", value=False, help="Uncheck this for recruits so they do not count towards the 9-person minimum.")
 
                 st.markdown("**Certifications**")
-                c1, c2, c3 = st.columns(3)
+                c1, c2, c3, c4 = st.columns(4)
                 a_off1 = c1.checkbox("Officer 1")
                 a_off2 = c1.checkbox("Officer 2")
                 a_off3 = c1.checkbox("Officer 3")
+                a_off4 = c1.checkbox("Officer 4")
+
                 a_insp = c2.checkbox("Inspector 1")
                 a_insp2 = c2.checkbox("Inspector 2")
-                a_inst = c2.checkbox("Instructor 1")
+                a_insp3 = c2.checkbox("Inspector 3")
+
+                a_inst = c3.checkbox("Instructor 1")
                 a_inst2 = c3.checkbox("Instructor 2")
-                a_emr = c3.checkbox("EMR")
-                a_emt = c3.checkbox("EMT")
+                a_inst3 = c3.checkbox("Instructor 3")
+
+                a_emr = c4.checkbox("EMR")
+                a_emt = c4.checkbox("EMT")
+                a_med = c4.checkbox("Paramedic")
 
                 if st.form_submit_button("Add Personnel", type="primary"):
                     if not a_name.strip():
@@ -2434,18 +2664,18 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                             c.execute(
                                 """INSERT INTO Personnel (
                                     Name, Seniority, Core_Manning, Schedule, Shift,
-                                    Officer_1, Officer_2, Officer_3,
-                                    Inspector, Inspector_2,
-                                    Instructor, Instructor_2,
-                                    EMR, EMT,
+                                    Officer_1, Officer_2, Officer_3, Officer_4,
+                                    Inspector, Inspector_2, Inspector_3,
+                                    Instructor, Instructor_2, Instructor_3,
+                                    EMR, EMT, Paramedic,
                                     Hire_Date, Tie_Breaker, Admin_24h_Day
-                                ) VALUES (%s, 999, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                                ) VALUES (%s, 999, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                                 (
                                     a_name.strip(), a_core, a_sched, a_shift,
-                                    a_off1, a_off2, a_off3,
-                                    a_insp, a_insp2,
-                                    a_inst, a_inst2,
-                                    a_emr, a_emt,
+                                    a_off1, a_off2, a_off3, a_off4,
+                                    a_insp, a_insp2, a_insp3,
+                                    a_inst, a_inst2, a_inst3,
+                                    a_emr, a_emt, a_med,
                                     a_hire.strftime("%Y-%m-%d"), int(a_tie), a_admin_day
                                 )
                             )
@@ -2470,10 +2700,10 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 except Exception:
                     curr_hire = datetime.date(2020, 1, 1)
 
-                if curr_hire < datetime.date(1995, 1, 1):
+                if curr_hire < datetime.date(1990, 1, 1):
                     min_hire_dt = curr_hire
                 else:
-                    min_hire_dt = datetime.date(1995, 1, 1)
+                    min_hire_dt = datetime.date(1990, 1, 1)
 
                 try:
                     curr_tie = int(target_data.get('tie_breaker', 9999))
@@ -2511,16 +2741,23 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                     e_core = st.checkbox("Counts Towards Minimum Manning (Core)", value=bool(target_data.get('core_manning', True)))
 
                     st.markdown("**Certifications**")
-                    c1, c2, c3 = st.columns(3)
+                    c1, c2, c3, c4 = st.columns(4)
                     e_off1 = c1.checkbox("Officer 1", value=bool(target_data.get('officer_1', False)))
                     e_off2 = c1.checkbox("Officer 2", value=bool(target_data.get('officer_2', False)))
                     e_off3 = c1.checkbox("Officer 3", value=bool(target_data.get('officer_3', False)))
+                    e_off4 = c1.checkbox("Officer 4", value=bool(target_data.get('officer_4', False)))
+
                     e_insp = c2.checkbox("Inspector 1", value=bool(target_data.get('inspector', False)))
                     e_insp2 = c2.checkbox("Inspector 2", value=bool(target_data.get('inspector_2', False)))
-                    e_inst = c2.checkbox("Instructor 1", value=bool(target_data.get('instructor', False)))
+                    e_insp3 = c2.checkbox("Inspector 3", value=bool(target_data.get('inspector_3', False)))
+
+                    e_inst = c3.checkbox("Instructor 1", value=bool(target_data.get('instructor', False)))
                     e_inst2 = c3.checkbox("Instructor 2", value=bool(target_data.get('instructor_2', False)))
-                    e_emr = c3.checkbox("EMR", value=bool(target_data.get('emr', False)))
-                    e_emt = c3.checkbox("EMT", value=bool(target_data.get('emt', False)))
+                    e_inst3 = c3.checkbox("Instructor 3", value=bool(target_data.get('instructor_3', False)))
+
+                    e_emr = c4.checkbox("EMR", value=bool(target_data.get('emr', False)))
+                    e_emt = c4.checkbox("EMT", value=bool(target_data.get('emt', False)))
+                    e_med = c4.checkbox("Paramedic", value=bool(target_data.get('paramedic', False)))
 
                     st.markdown("<br>", unsafe_allow_html=True)
                     btn_col1, btn_col2 = st.columns(2)
@@ -2532,19 +2769,19 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                                 """UPDATE Personnel SET
                                     Seniority=%s, Shift=%s, Schedule=%s, Core_Manning=%s,
                                     Hire_Date=%s, Tie_Breaker=%s,
-                                    Officer_1=%s, Officer_2=%s, Officer_3=%s,
-                                    Inspector=%s, Inspector_2=%s,
-                                    Instructor=%s, Instructor_2=%s,
-                                    EMR=%s, EMT=%s,
+                                    Officer_1=%s, Officer_2=%s, Officer_3=%s, Officer_4=%s,
+                                    Inspector=%s, Inspector_2=%s, Inspector_3=%s,
+                                    Instructor=%s, Instructor_2=%s, Instructor_3=%s,
+                                    EMR=%s, EMT=%s, Paramedic=%s,
                                     Admin_24h_Day=%s
                                 WHERE Name=%s""",
                                 (
                                     e_sen, e_shift, e_sched, e_core,
                                     e_hire.strftime("%Y-%m-%d"), int(e_tie),
-                                    e_off1, e_off2, e_off3,
-                                    e_insp, e_insp2,
-                                    e_inst, e_inst2,
-                                    e_emr, e_emt,
+                                    e_off1, e_off2, e_off3, e_off4,
+                                    e_insp, e_insp2, e_insp3,
+                                    e_inst, e_inst2, e_inst3,
+                                    e_emr, e_emt, e_med,
                                     e_admin_day, edit_target
                                 )
                             )
@@ -2718,7 +2955,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 conn = get_db_connection()
                 try:
                     table_queries = {
-                        "Personnel": "SELECT name, seniority, core_manning, schedule, shift, officer_1, officer_2, officer_3, inspector, inspector_2, instructor, instructor_2, emr, emt, hire_date, tie_breaker, admin_24h_day FROM Personnel",
+                        "Personnel": "SELECT name, seniority, core_manning, schedule, shift, emr, emt, paramedic, officer_1, officer_2, officer_3, officer_4, inspector, inspector_2, inspector_3, instructor, instructor_2, instructor_3, hire_date, tie_breaker, admin_24h_day FROM Personnel",
                         "Overtime_Buckets": "SELECT name, seniority, shift, current_hours, contact FROM Overtime_Buckets",
                         "Leave_Ledger": "SELECT id, target_date, name, leave_type, start_time, end_time, total_hours FROM Leave_Ledger",
                         "Overtime_Log": "SELECT id, target_date, name, ot_type, start_time, end_time, total_hours FROM Overtime_Log",
