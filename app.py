@@ -71,6 +71,14 @@ def get_station_today():
         return (datetime.datetime.utcnow() - datetime.timedelta(hours=4)).date()
 
 
+def get_station_timestamp_str():
+    """Returns the current timestamp in Rickenbacker Station local time (America/New_York)."""
+    try:
+        return datetime.datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return (datetime.datetime.utcnow() - datetime.timedelta(hours=4)).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def get_icon(entry_type):
     icons = {
         "Annual Leave": "🏖️", "Paternity Leave": "🍼", "Union Leave": "🤝",
@@ -190,46 +198,7 @@ def is_admin_pm_active(person_row, weekday_int):
     return False
 
 
-# --- 1. SIDEBAR: AUTH, CONTROLS, & NAVIGATION ---
-st.sidebar.markdown("### 🔒 System Access")
-entered_pin = st.sidebar.text_input("Enter PIN to Edit", type="password")
-is_admin = (entered_pin == str(ADMIN_PIN))
-
-if is_admin:
-    st.sidebar.success("✅ Admin Unlocked")
-else:
-    st.sidebar.info("👀 Read-Only Mode")
-
-st.sidebar.divider()
-
-st.sidebar.markdown("<div style='font-size: 1.25rem; font-weight: 600; margin-bottom: 5px;'>Select Target Date</div>", unsafe_allow_html=True)
-target_date = st.sidebar.date_input("Select Target Date", get_station_today(), label_visibility="collapsed")
-target_date_str = target_date.strftime("%Y-%m-%d")
-
-anchor_date = datetime.date(2026, 9, 16)
-shift_mod = (target_date - anchor_date).days % 3
-
-if shift_mod == 0:
-    selected_shift, top_shift_color = "A-Shift", "#4CAF50"
-elif shift_mod == 1:
-    selected_shift, top_shift_color = "B-Shift", "#2196F3"
-else:
-    selected_shift, top_shift_color = "C-Shift", "#F44336"
-
-st.sidebar.divider()
-
-st.sidebar.header("Navigation")
-nav_options = [
-    "📋 Daily Roster",
-    "⏱️ Overtime Roster",
-    "📅 Leave Calendar",
-    "📆 Training & Events",
-    "📊 Seat Statistics"
-]
-if is_admin:
-    nav_options.extend(["✍️ Data Entry"])
-
-selected_page = st.sidebar.radio("Go to:", nav_options, label_visibility="collapsed")
+# --- 1. DATABASE INITIALIZATION & MULTI-ADMIN AUTHENTICATION ---
 
 
 # --- 2. POSTGRES DATABASE CLOUD CONNECTION & CACHED INITIALIZATION ---
@@ -393,7 +362,7 @@ def recalculate_ff_seniority():
 
 
 @st.cache_resource
-def init_db(_schema_v=5):
+def init_db(_schema_v=6):
     conn = get_db_connection()
     try:
         with conn.cursor() as c:
@@ -445,6 +414,21 @@ def init_db(_schema_v=5):
             c.execute("""CREATE TABLE IF NOT EXISTS System_Migrations (
                 Migration_Key TEXT PRIMARY KEY, Applied_At TEXT
             )""")
+            c.execute("""CREATE TABLE IF NOT EXISTS Admin_Users (
+                Admin_Name TEXT PRIMARY KEY,
+                Pin_Code TEXT NOT NULL,
+                Role TEXT DEFAULT 'Shift Officer',
+                Active BOOLEAN DEFAULT TRUE,
+                Created_At TEXT
+            )""")
+            c.execute("""CREATE TABLE IF NOT EXISTS Audit_Log (
+                id SERIAL PRIMARY KEY,
+                Timestamp_ET TEXT,
+                Admin_Name TEXT,
+                Action_Type TEXT,
+                Target_Date TEXT,
+                Details TEXT
+            )""")
 
             # Ensure backward-compatible schema migrations for existing Personnel tables
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_1 BOOLEAN DEFAULT FALSE")
@@ -479,6 +463,14 @@ def init_db(_schema_v=5):
                 ]
                 c.executemany("INSERT INTO Apparatus (Rig_Name, Status) VALUES (%s, %s)", default_rigs)
 
+            # Seed Master Admin in Admin_Users if table is empty
+            c.execute("SELECT COUNT(*) FROM Admin_Users")
+            if c.fetchone()[0] == 0:
+                c.execute(
+                    "INSERT INTO Admin_Users (Admin_Name, Pin_Code, Role, Active, Created_At) VALUES (%s, %s, %s, %s, %s)",
+                    ("Lambert (Master)", str(ADMIN_PIN).strip(), "Full Admin", True, get_station_timestamp_str())
+                )
+
             # Clean up any future-dated Position_Log rows left over from legacy manual projections
             today_cleanup_str = get_station_today().strftime("%Y-%m-%d")
             c.execute("DELETE FROM Position_Log WHERE Target_Date >= %s", (today_cleanup_str,))
@@ -505,9 +497,83 @@ def init_db(_schema_v=5):
 
 init_db()
 
-# Read Data & Standardize Column Names safely
+# Read Data & Authenticate Admin Session
 conn = get_db_connection()
 try:
+    admin_users_df = pd.read_sql("SELECT * FROM Admin_Users", conn)
+    admin_users_df.columns = [c.lower() for c in admin_users_df.columns] if not admin_users_df.empty else ["admin_name", "pin_code", "role", "active", "created_at"]
+
+    # --- SIDEBAR: INDIVIDUAL ADMIN AUTH, CONTROLS, & NAVIGATION ---
+    st.sidebar.markdown("### 🔒 System Access")
+    entered_pin = st.sidebar.text_input("Enter Individual PIN / Password", type="password")
+    clean_pin = entered_pin.strip()
+
+    is_admin = False
+    is_full_admin = False
+    current_admin_name = "Read-Only"
+    current_admin_role = "Viewer"
+
+    if clean_pin != "":
+        active_admins = admin_users_df[admin_users_df['active'] == True] if not admin_users_df.empty else pd.DataFrame()
+        matched_admin = active_admins[active_admins['pin_code'].astype(str).str.strip() == clean_pin] if not active_admins.empty else pd.DataFrame()
+
+        if not matched_admin.empty:
+            is_admin = True
+            current_admin_name = str(matched_admin.iloc[0]['admin_name'])
+            current_admin_role = str(matched_admin.iloc[0].get('role', 'Shift Officer') or 'Shift Officer')
+            is_full_admin = (current_admin_role == "Full Admin")
+        elif isinstance(st.secrets.get("ADMIN_PINS"), dict) and clean_pin in [str(v).strip() for v in st.secrets["ADMIN_PINS"].values()]:
+            for k_name, v_pin in st.secrets["ADMIN_PINS"].items():
+                if str(v_pin).strip() == clean_pin:
+                    is_admin = True
+                    current_admin_name = str(k_name)
+                    current_admin_role = "Full Admin"
+                    is_full_admin = True
+                    break
+        elif clean_pin == str(ADMIN_PIN).strip():
+            is_admin = True
+            current_admin_name = "Master Admin"
+            current_admin_role = "Full Admin"
+            is_full_admin = True
+
+    if is_admin:
+        st.sidebar.success(f"✅ **{current_admin_name}**\n*({current_admin_role})*")
+    elif clean_pin != "":
+        st.sidebar.error("❌ Invalid or Inactive PIN")
+    else:
+        st.sidebar.info("👀 Read-Only Mode")
+
+    st.sidebar.divider()
+
+    st.sidebar.markdown("<div style='font-size: 1.25rem; font-weight: 600; margin-bottom: 5px;'>Select Target Date</div>", unsafe_allow_html=True)
+    target_date = st.sidebar.date_input("Select Target Date", get_station_today(), label_visibility="collapsed")
+    target_date_str = target_date.strftime("%Y-%m-%d")
+
+    anchor_date = datetime.date(2026, 9, 16)
+    shift_mod = (target_date - anchor_date).days % 3
+
+    if shift_mod == 0:
+        selected_shift, top_shift_color = "A-Shift", "#4CAF50"
+    elif shift_mod == 1:
+        selected_shift, top_shift_color = "B-Shift", "#2196F3"
+    else:
+        selected_shift, top_shift_color = "C-Shift", "#F44336"
+
+    st.sidebar.divider()
+
+    st.sidebar.header("Navigation")
+    nav_options = [
+        "📋 Daily Roster",
+        "⏱️ Overtime Roster",
+        "📅 Leave Calendar",
+        "📆 Training & Events",
+        "📊 Seat Statistics"
+    ]
+    if is_admin:
+        nav_options.extend(["✍️ Data Entry", "🛡️ Audit & Admin PINs"])
+
+    selected_page = st.sidebar.radio("Go to:", nav_options, label_visibility="collapsed")
+
     all_personnel_df = pd.read_sql("SELECT * FROM Personnel", conn)
     all_personnel_df.columns = [c.lower() for c in all_personnel_df.columns]
     if 'hire_date' not in all_personnel_df.columns:
@@ -567,6 +633,19 @@ try:
     app_df.columns = [c.lower() for c in app_df.columns]
 finally:
     conn.close()
+
+
+def log_audit_event(conn_or_cur, action_type, target_date_val, details_str, admin_override=None):
+    """Records an admin action in Audit_Log with Eastern Time timestamp and the active admin's identity."""
+    actor = admin_override if admin_override else current_admin_name
+    ts_str = get_station_timestamp_str()
+    td_str = str(target_date_val) if target_date_val else ""
+    sql = "INSERT INTO Audit_Log (Timestamp_ET, Admin_Name, Action_Type, Target_Date, Details) VALUES (%s, %s, %s, %s, %s)"
+    if hasattr(conn_or_cur, "cursor"):
+        with conn_or_cur.cursor() as cur_log:
+            cur_log.execute(sql, (ts_str, actor, action_type, td_str, details_str))
+    else:
+        conn_or_cur.execute(sql, (ts_str, actor, action_type, td_str, details_str))
 
 # Evaluate Apparatus Status
 app_status_dict = dict(zip(app_df['rig_name'], app_df['status']))
@@ -1771,7 +1850,9 @@ if roster_generation_error:
                 if cols[1].button("🗑 Delete to Unblock", key=f"err_del_ov_{ov['id']}", use_container_width=True, type="primary"):
                     conn = get_db_connection()
                     try:
-                        conn.cursor().execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
+                        c = conn.cursor()
+                        c.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
+                        log_audit_event(c, "Seat Lock Removed", target_date_str, f"Unblocked conflict: Removed lock {ov['name']} -> {ov['seat']} ({per_disp})")
                         conn.commit()
                     finally:
                         conn.close()
@@ -1986,6 +2067,7 @@ if selected_page == "📋 Daily Roster":
                                             "INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, 'PM')",
                                             (target_date_str, new_pm_val, seat_name)
                                         )
+                                log_audit_event(c, "Seat Lock Updated", target_date_str, f"{seat_name} set to AM: {new_am_val}, PM: {new_pm_val}")
                                 conn.commit()
                             finally:
                                 conn.close()
@@ -2021,6 +2103,8 @@ if selected_page == "📋 Daily Roster":
                                 inserts = [w for w in inserts if w[2] != "--"]
                                 if inserts:
                                     c.executemany("INSERT INTO ARO_Watch (Target_Date, Watch_Period, Name) VALUES (%s, %s, %s)", inserts)
+                                watch_desc = ", ".join([f"{w[1]}: {w[2]}" for w in inserts]) if inserts else "Cleared all watches"
+                                log_audit_event(c, "ARO Watches Updated", target_date_str, watch_desc)
                                 conn.commit()
                             finally:
                                 conn.close()
@@ -2088,6 +2172,7 @@ if selected_page == "📋 Daily Roster":
                                     seen_pm.add(clean_pm)
                 if inserts:
                     c.executemany("INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, %s)", inserts)
+                log_audit_event(c, "Roster Locked", target_date_str, f"Locked entire current roster ({len(inserts)} seat locks applied)")
                 conn.commit()
             finally:
                 conn.close()
@@ -2100,6 +2185,7 @@ if selected_page == "📋 Daily Roster":
             try:
                 c = conn.cursor()
                 c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s", (target_date_str,))
+                log_audit_event(c, "Roster Unlocked", target_date_str, "Unlocked all seats for this date")
                 conn.commit()
             finally:
                 conn.close()
@@ -2155,6 +2241,7 @@ if selected_page == "📋 Daily Roster":
                             "INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, %s)",
                             (target_date_str, o_name, o_seat, o_period)
                         )
+                        log_audit_event(c, "Seat Lock Added", target_date_str, f"Locked {o_name} into {o_seat} ({period_labels[o_period]})")
                         conn.commit()
                     finally:
                         conn.close()
@@ -2175,7 +2262,9 @@ if selected_page == "📋 Daily Roster":
                         if cols[1].button("🗑", key=f"del_ov_{ov['id']}", use_container_width=True):
                             conn = get_db_connection()
                             try:
-                                conn.cursor().execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
+                                c = conn.cursor()
+                                c.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
+                                log_audit_event(c, "Seat Lock Removed", target_date_str, f"Removed lock: {ov['name']} -> {ov['seat']} ({per_badge})")
                                 conn.commit()
                             finally:
                                 conn.close()
@@ -2250,7 +2339,7 @@ elif selected_page == "⏱️ Overtime Roster":
                 st.error(f"Cannot mark the same person as both Charged and Awarded: {', '.join(both_checked)}")
             else:
                 archive_stamp = f"{datetime.datetime.now().strftime('%Y-%m-%d_%H%M%S')}"
-                compiled_notes = f"[{ot_worked_date.strftime('%Y-%m-%d')} | {ot_shift}-Shift | {ot_start}-{ot_end}] {ot_notes}"
+                compiled_notes = f"[{ot_worked_date.strftime('%Y-%m-%d')} | {ot_shift}-Shift | {ot_start}-{ot_end} | By: {current_admin_name}] {ot_notes}"
                 archive_records = []
 
                 df_print = edited_df[edited_df['Contact'] == 'Yes'].copy()
@@ -2301,6 +2390,14 @@ elif selected_page == "⏱️ Overtime Roster":
                             "INSERT INTO Overtime_Log (Target_Date, Name, OT_Type, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s)",
                             ot_log_inserts
                         )
+                    awarded_list = edited_df[edited_df['Awarded']]['Name'].tolist()
+                    charged_list = edited_df[edited_df['Charged']]['Name'].tolist()
+                    log_audit_event(
+                        c,
+                        "OT Callout Processed",
+                        worked_date_str,
+                        f"{callout_hours}h ({ot_shift}-Shift {ot_start}-{ot_end}) | Awarded: {', '.join(awarded_list) or 'None'} | Charged: {', '.join(charged_list) or 'None'} | Notes: {ot_notes}"
+                    )
                     conn.commit()
                 finally:
                     conn.close()
@@ -2436,7 +2533,9 @@ elif selected_page == "📅 Leave Calendar":
                                         if st.button("🗑️ Cancel Leave", key=f"del_leave_{l['id']}", type="primary", use_container_width=True):
                                             conn = get_db_connection()
                                             try:
-                                                conn.cursor().execute("DELETE FROM Leave_Ledger WHERE id = %s", (l['id'],))
+                                                c = conn.cursor()
+                                                c.execute("DELETE FROM Leave_Ledger WHERE id = %s", (l['id'],))
+                                                log_audit_event(c, "Leave Cancelled", date_str, f"Cancelled {l['leave_type']} for {l['name']} ({l['start_time']}-{l['end_time']}, {hrs}h)")
                                                 conn.commit()
                                             finally:
                                                 conn.close()
@@ -2455,7 +2554,9 @@ elif selected_page == "📅 Leave Calendar":
                                         if st.button("🗑️ Cancel OT", key=f"del_ot_{o['id']}", type="primary", use_container_width=True):
                                             conn = get_db_connection()
                                             try:
-                                                conn.cursor().execute("DELETE FROM Overtime_Log WHERE id = %s", (o['id'],))
+                                                c = conn.cursor()
+                                                c.execute("DELETE FROM Overtime_Log WHERE id = %s", (o['id'],))
+                                                log_audit_event(c, "Overtime Cancelled", date_str, f"Cancelled {o['ot_type']} OT for {o['name']} ({o['start_time']}-{o['end_time']}, {hrs}h)")
                                                 conn.commit()
                                             finally:
                                                 conn.close()
@@ -2471,7 +2572,9 @@ elif selected_page == "📅 Leave Calendar":
                                     if st.button("🗑 Cancel Trade", key=f"del_trade_{t['id']}_{date_str}", type="primary", use_container_width=True):
                                         conn = get_db_connection()
                                         try:
-                                            conn.cursor().execute("DELETE FROM Shift_Trades_V3 WHERE id = %s", (t['id'],))
+                                            c = conn.cursor()
+                                            c.execute("DELETE FROM Shift_Trades_V3 WHERE id = %s", (t['id'],))
+                                            log_audit_event(c, "Shift Trade Cancelled", date_str, f"Cancelled Trade: {t['Off_Name']} <-> {t['Work_Name']} ({hrs}h)")
                                             conn.commit()
                                         finally:
                                             conn.close()
@@ -2542,7 +2645,9 @@ elif selected_page == "📆 Training & Events":
                                             if st.button("🗑️ Cancel Event", key=f"del_ev_cal_{ev['id']}", type="primary", use_container_width=True):
                                                 conn = get_db_connection()
                                                 try:
-                                                    conn.cursor().execute("DELETE FROM Station_Events WHERE id = %s", (ev['id'],))
+                                                    c = conn.cursor()
+                                                    c.execute("DELETE FROM Station_Events WHERE id = %s", (ev['id'],))
+                                                    log_audit_event(c, "Event Deleted", date_str, f"Deleted {ev['event_type']}: {ev['description']} ({ev['start_time']}-{ev['end_time']})")
                                                     conn.commit()
                                                 finally:
                                                     conn.close()
@@ -2573,10 +2678,12 @@ elif selected_page == "📆 Training & Events":
                         else:
                             conn = get_db_connection()
                             try:
-                                conn.cursor().execute(
+                                c = conn.cursor()
+                                c.execute(
                                     "INSERT INTO Station_Events (Target_Date, Event_Type, Description, Start_Time, End_Time, Instructor) VALUES (%s, %s, %s, %s, %s, %s)",
                                     (e_date.strftime("%Y-%m-%d"), e_type, e_desc, e_start, e_end, e_instructor)
                                 )
+                                log_audit_event(c, "Event Added", e_date.strftime("%Y-%m-%d"), f"Added {e_type}: {e_desc} ({e_start}-{e_end}, Instructor: {e_instructor})")
                                 conn.commit()
                             finally:
                                 conn.close()
@@ -2601,7 +2708,9 @@ elif selected_page == "📆 Training & Events":
                             if cols[1].button("🗑", key=f"del_ev_list_{ev['id']}", use_container_width=True):
                                 conn = get_db_connection()
                                 try:
-                                    conn.cursor().execute("DELETE FROM Station_Events WHERE id = %s", (ev['id'],))
+                                    c = conn.cursor()
+                                    c.execute("DELETE FROM Station_Events WHERE id = %s", (ev['id'],))
+                                    log_audit_event(c, "Event Deleted", target_date_str, f"Deleted {ev['event_type']}: {ev['description']} ({ev['start_time']}-{ev['end_time']})")
                                     conn.commit()
                                 finally:
                                     conn.close()
@@ -2701,11 +2810,14 @@ elif selected_page == "✍️ Data Entry" and is_admin:
 
                         conn = get_db_connection()
                         try:
+                            c = conn.cursor()
                             inserts = [(d, l_name, l_type, l_start, l_end, l_hours) for d in dates_to_log]
-                            conn.cursor().executemany(
+                            c.executemany(
                                 "INSERT INTO Leave_Ledger (Target_Date, Name, Leave_Type, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s)",
                                 inserts
                             )
+                            date_span_str = f"{dates_to_log[0]} to {dates_to_log[-1]}" if len(dates_to_log) > 1 else dates_to_log[0]
+                            log_audit_event(c, "Leave Logged", date_span_str, f"Logged {l_type} for {l_name}: {len(dates_to_log)} shift(s) ({l_start}-{l_end}, {l_hours}h/shift)")
                             conn.commit()
                         finally:
                             conn.close()
@@ -2742,10 +2854,12 @@ elif selected_page == "✍️ Data Entry" and is_admin:
 
                         conn = get_db_connection()
                         try:
-                            conn.cursor().execute(
+                            c = conn.cursor()
+                            c.execute(
                                 "INSERT INTO Overtime_Log (Target_Date, Name, OT_Type, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s)",
                                 (o_date.strftime("%Y-%m-%d"), final_name, o_type, o_start, o_end, o_hours)
                             )
+                            log_audit_event(c, "Overtime Logged", o_date.strftime("%Y-%m-%d"), f"Logged {o_type} for {final_name} ({o_start}-{o_end}, {o_hours}h)")
                             conn.commit()
                         finally:
                             conn.close()
@@ -2785,9 +2899,16 @@ elif selected_page == "✍️ Data Entry" and is_admin:
 
                         conn = get_db_connection()
                         try:
-                            conn.cursor().execute(
+                            c = conn.cursor()
+                            c.execute(
                                 "INSERT INTO Shift_Trades_V3 (Date_1, Name_1, Date_2, Name_2, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                                 (t_date1.strftime("%Y-%m-%d"), t_name1, t_date2.strftime("%Y-%m-%d"), t_name2, t_start, t_end, t_hours)
+                            )
+                            log_audit_event(
+                                c,
+                                "Shift Trade Logged",
+                                f"{t_date1.strftime('%Y-%m-%d')} / {t_date2.strftime('%Y-%m-%d')}",
+                                f"Trade: {t_name1} ({t_date1.strftime('%Y-%m-%d')}) <-> {t_name2} ({t_date2.strftime('%Y-%m-%d')}) ({t_start}-{t_end}, {t_hours}h)"
                             )
                             conn.commit()
                         finally:
@@ -2828,6 +2949,8 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                     conn = get_db_connection()
                     try:
                         cnt = sync_personnel_certifications(conn, MASTER_CERT_DATA)
+                        log_audit_event(conn, "Certifications Synced", station_today_str, f"Re-synced {cnt} personnel records from built-in Master Sheet")
+                        conn.commit()
                     finally:
                         conn.close()
                     recalculate_ff_seniority()
@@ -2879,6 +3002,8 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                             conn = get_db_connection()
                             try:
                                 cnt = sync_personnel_certifications(conn, up_records)
+                                log_audit_event(conn, "Certifications Imported", station_today_str, f"Imported and synced {cnt} personnel records from uploaded Excel sheet")
+                                conn.commit()
                             finally:
                                 conn.close()
                             recalculate_ff_seniority()
@@ -2961,6 +3086,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                                     a_hire.strftime("%Y-%m-%d"), int(a_tie), a_admin_day
                                 )
                             )
+                            log_audit_event(c, "Personnel Added", station_today_str, f"Added {a_name.strip()} (Shift: {a_shift}, Sched: {a_sched}, Hire: {a_hire.strftime('%Y-%m-%d')}, Tie: {int(a_tie)})")
                             conn.commit()
                         finally:
                             conn.close()
@@ -3067,6 +3193,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                                     e_admin_day, edit_target
                                 )
                             )
+                            log_audit_event(c, "Personnel Updated", station_today_str, f"Updated {edit_target} (Sen: {e_sen}, Shift: {e_shift}, Sched: {e_sched}, Hire: {e_hire.strftime('%Y-%m-%d')}, Tie: {int(e_tie)})")
                             conn.commit()
                         finally:
                             conn.close()
@@ -3081,6 +3208,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                             c = conn.cursor()
                             c.execute("DELETE FROM Personnel WHERE Name = %s", (edit_target,))
                             c.execute("DELETE FROM Overtime_Buckets WHERE Name = %s", (edit_target,))
+                            log_audit_event(c, "Personnel Deleted", station_today_str, f"Deleted {edit_target} from Personnel and Overtime_Buckets")
                             conn.commit()
                         finally:
                             conn.close()
@@ -3156,6 +3284,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                                Contact = EXCLUDED.Contact""",
                         ot_records
                     )
+                log_audit_event(c, "OT Canvass List Edited", station_today_str, f"Saved manual updates to Overtime Canvass List ({len(ot_records)} personnel)")
                 conn.commit()
                 st.success("✅ Overtime Canvass List updated!")
                 time.sleep(1)
@@ -3185,6 +3314,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                     try:
                         c = conn.cursor()
                         c.execute("UPDATE Apparatus SET Status = %s WHERE Rig_Name = %s", (new_stat, rig))
+                        log_audit_event(c, "Apparatus Status Changed", target_date_str, f"{rig} changed from '{curr_stat}' to '{new_stat}'")
                         conn.commit()
                     finally:
                         conn.close()
@@ -3200,6 +3330,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                         try:
                             c = conn.cursor()
                             c.execute("INSERT INTO Apparatus (Rig_Name, Status) VALUES (%s, %s) ON CONFLICT DO NOTHING", (t_rig.strip(), "In Service"))
+                            log_audit_event(c, "Apparatus Added", target_date_str, f"Added temporary rig: {t_rig.strip()}")
                             conn.commit()
                         finally:
                             conn.close()
@@ -3215,6 +3346,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                         try:
                             c = conn.cursor()
                             c.execute("DELETE FROM Apparatus WHERE Rig_Name = %s", (tr,))
+                            log_audit_event(c, "Apparatus Removed", target_date_str, f"Removed temporary rig: {tr}")
                             conn.commit()
                         finally:
                             conn.close()
@@ -3247,7 +3379,9 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                         "ARO_Watch": "SELECT id, target_date, watch_period, name FROM ARO_Watch",
                         "Manual_Overrides": "SELECT id, target_date, name, seat, period FROM Manual_Overrides",
                         "Station_Events": "SELECT id, target_date, event_type, description, start_time, end_time, instructor FROM Station_Events",
-                        "Apparatus": "SELECT Rig_Name, Status FROM Apparatus"
+                        "Apparatus": "SELECT Rig_Name, Status FROM Apparatus",
+                        "Admin_Users": "SELECT Admin_Name, Pin_Code, Role, Active, Created_At FROM Admin_Users",
+                        "Audit_Log": "SELECT id, Timestamp_ET, Admin_Name, Action_Type, Target_Date, Details FROM Audit_Log"
                     }
 
                     output = io.BytesIO()
@@ -3275,54 +3409,323 @@ elif selected_page == "✍️ Data Entry" and is_admin:
             uploaded_backup = st.file_uploader("Upload Backup Excel File", type=["xlsx"], key="restore_file")
 
             if uploaded_backup is not None:
-                st.warning("⚠️ Restoring will overwrite all current data with the contents of this file.")
-                if st.button("🚨 Overwrite & Restore Database", type="primary", use_container_width=True):
-                    try:
-                        excel_file = pd.ExcelFile(uploaded_backup)
+                if not is_full_admin:
+                    st.error("🔒 Only Full Admins are permitted to overwrite and restore the entire database.")
+                else:
+                    st.warning("⚠️ Restoring will overwrite all current data with the contents of this file.")
+                    if st.button("🚨 Overwrite & Restore Database", type="primary", use_container_width=True):
+                        try:
+                            excel_file = pd.ExcelFile(uploaded_backup)
 
-                        core_sheets = [
-                            "Personnel", "Overtime_Buckets", "Leave_Ledger",
-                            "Overtime_Log", "Shift_Trades_V3", "Position_Log",
-                            "OT_Archive", "ARO_Watch", "Manual_Overrides"
-                        ]
+                            core_sheets = [
+                                "Personnel", "Overtime_Buckets", "Leave_Ledger",
+                                "Overtime_Log", "Shift_Trades_V3", "Position_Log",
+                                "OT_Archive", "ARO_Watch", "Manual_Overrides"
+                            ]
 
-                        missing_core = [s for s in core_sheets if s not in excel_file.sheet_names]
-                        if missing_core:
-                            st.error(f"Invalid backup file! Missing required sheets: {', '.join(missing_core)}")
+                            missing_core = [s for s in core_sheets if s not in excel_file.sheet_names]
+                            if missing_core:
+                                st.error(f"Invalid backup file! Missing required sheets: {', '.join(missing_core)}")
+                            else:
+                                conn = get_db_connection()
+                                c = conn.cursor()
+
+                                all_possible_sheets = core_sheets + ["Station_Events", "Apparatus", "Admin_Users", "Audit_Log"]
+
+                                for t in reversed(all_possible_sheets):
+                                    if t in excel_file.sheet_names:
+                                        c.execute(f"DELETE FROM {t};")
+
+                                for t in all_possible_sheets:
+                                    if t in excel_file.sheet_names:
+                                        df = pd.read_excel(excel_file, sheet_name=t)
+                                        df = df.where(pd.notnull(df), None)
+
+                                        if not df.empty:
+                                            cols = list(df.columns)
+                                            col_str = ", ".join(cols)
+                                            val_placeholders = ", ".join(["%s"] * len(cols))
+                                            query = f"INSERT INTO {t} ({col_str}) VALUES ({val_placeholders})"
+
+                                            records = [tuple(row) for row in df.to_numpy()]
+                                            c.executemany(query, records)
+
+                                        if "id" in [col.lower() for col in df.columns]:
+                                            c.execute(f"SELECT setval(pg_get_serial_sequence('{t}', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM {t};")
+
+                                log_audit_event(c, "Database Restored", station_today_str, f"Restored database from backup file: {uploaded_backup.name}")
+                                conn.commit()
+                                conn.close()
+                                st.success("✅ Database successfully restored to snapshot state!")
+                                time.sleep(2)
+                                st.rerun()
+                        except Exception as e:
+                            if 'conn' in locals() and conn:
+                                conn.rollback()
+                                conn.close()
+                            st.error(f"Restore failed: {e}")
+
+
+# ==========================================
+# PAGE 7: AUDIT LOG & ADMIN PIN MANAGEMENT
+# ==========================================
+elif selected_page == "🛡️ Audit & Admin PINs" and is_admin:
+    st.subheader("🛡️ Activity Audit Log & Admin Access Control")
+    st.caption(f"Logged in as **{current_admin_name}** ({current_admin_role}). Every change made across A-Shift, B-Shift, C-Shift, and Admin is automatically stamped with the user's name and Eastern Time.")
+
+    audit_tabs = st.tabs(["📜 Activity Audit Log", "🔑 Manage Admin PINs & Passwords"])
+
+    # ----------------------------------------
+    # TAB 1: ACTIVITY AUDIT LOG
+    # ----------------------------------------
+    with audit_tabs[0]:
+        conn = get_db_connection()
+        try:
+            audit_df = pd.read_sql("SELECT id, Timestamp_ET, Admin_Name, Action_Type, Target_Date, Details FROM Audit_Log ORDER BY id DESC", conn)
+        finally:
+            conn.close()
+
+        if audit_df.empty:
+            st.info("No admin changes have been logged yet. As soon as any admin locks a seat, enters leave/OT/trades, or updates settings, the activity will appear here.")
+        else:
+            audit_df.columns = [c.lower() for c in audit_df.columns]
+
+            # Top Summary Metrics
+            today_prefix = station_today_str
+            actions_today_df = audit_df[audit_df['timestamp_et'].astype(str).str.startswith(today_prefix)]
+            unique_admins_all = sorted(audit_df['admin_name'].dropna().unique().tolist())
+            unique_actions_all = sorted(audit_df['action_type'].dropna().unique().tolist())
+            latest_actor = audit_df.iloc[0]['admin_name']
+            latest_time = audit_df.iloc[0]['timestamp_et']
+
+            m_c1, m_c2, m_c3, m_c4 = st.columns(4)
+            m_c1.metric("Total Logged Changes", len(audit_df))
+            m_c2.metric("Changes Today", len(actions_today_df))
+            m_c3.metric("Active Admins Recorded", len(unique_admins_all))
+            m_c4.metric("Most Recent Edit By", latest_actor, delta=latest_time, delta_color="off")
+
+            st.divider()
+
+            # Filter Controls
+            f_c1, f_c2, f_c3, f_c4 = st.columns([1.5, 1.5, 2, 1])
+            with f_c1:
+                sel_admin = st.selectbox("Filter by Admin / Officer", ["All Admins"] + unique_admins_all)
+            with f_c2:
+                sel_action = st.selectbox("Filter by Action Category", ["All Actions"] + unique_actions_all)
+            with f_c3:
+                search_kw = st.text_input("Search Shift Date or Details", placeholder="e.g., 2026-10-28, Elswick, E-221...")
+            with f_c4:
+                row_limit = st.selectbox("Show Rows", [100, 250, 500, "All"], index=0)
+
+            filtered_audit = audit_df.copy()
+            if sel_admin != "All Admins":
+                filtered_audit = filtered_audit[filtered_audit['admin_name'] == sel_admin]
+            if sel_action != "All Actions":
+                filtered_audit = filtered_audit[filtered_audit['action_type'] == sel_action]
+            if search_kw.strip():
+                kw = search_kw.strip().lower()
+                mask = (
+                    filtered_audit['target_date'].astype(str).str.lower().str.contains(kw, na=False) |
+                    filtered_audit['details'].astype(str).str.lower().str.contains(kw, na=False) |
+                    filtered_audit['admin_name'].astype(str).str.lower().str.contains(kw, na=False) |
+                    filtered_audit['action_type'].astype(str).str.lower().str.contains(kw, na=False)
+                )
+                filtered_audit = filtered_audit[mask]
+
+            if row_limit != "All":
+                filtered_audit_disp = filtered_audit.head(int(row_limit)).copy()
+            else:
+                filtered_audit_disp = filtered_audit.copy()
+
+            filtered_audit_disp.rename(
+                columns={
+                    "timestamp_et": "Timestamp (ET)",
+                    "admin_name": "Admin / Officer",
+                    "action_type": "Action Category",
+                    "target_date": "Target Shift Date",
+                    "details": "Change Details"
+                },
+                inplace=True
+            )
+
+            st.dataframe(
+                filtered_audit_disp[["Timestamp (ET)", "Admin / Officer", "Action Category", "Target Shift Date", "Change Details"]],
+                use_container_width=True,
+                hide_index=True,
+                height=min(650, max(220, (len(filtered_audit_disp) * 35) + 45))
+            )
+
+            # Export filtered or complete Audit Log to Excel
+            exp_col1, exp_col2 = st.columns([8, 2])
+            with exp_col2:
+                audit_excel_buf = io.BytesIO()
+                with pd.ExcelWriter(audit_excel_buf, engine='openpyxl') as writer:
+                    filtered_audit_disp[["Timestamp (ET)", "Admin / Officer", "Action Category", "Target Shift Date", "Change Details"]].to_excel(
+                        writer, sheet_name="Audit_Log", index=False
+                    )
+                st.download_button(
+                    "⬇️ Export Audit Log (.xlsx)",
+                    data=audit_excel_buf.getvalue(),
+                    file_name=f"RFD_Audit_Log_{station_today_str}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+    # ----------------------------------------
+    # TAB 2: MANAGE ADMIN PINS & PASSWORDS
+    # ----------------------------------------
+    with audit_tabs[1]:
+        if not is_full_admin:
+            st.markdown("#### 🔒 Update My PIN / Password")
+            st.info(f"You are logged in as **{current_admin_name}** (`Shift Officer`). You can update your personal PIN/Password below. Creating or managing other admin accounts requires a `Full Admin` account.")
+
+            with st.form("self_change_pin_form", clear_on_submit=True):
+                new_self_pin = st.text_input("New PIN or Password", type="password")
+                confirm_self_pin = st.text_input("Confirm New PIN or Password", type="password")
+                if st.form_submit_button("Update My PIN", type="primary"):
+                    p1 = new_self_pin.strip()
+                    p2 = confirm_self_pin.strip()
+                    if len(p1) < 4:
+                        st.error("PIN / Password must be at least 4 characters.")
+                    elif p1 != p2:
+                        st.error("PINs do not match.")
+                    else:
+                        other_pins = admin_users_df[admin_users_df['admin_name'] != current_admin_name]['pin_code'].astype(str).str.strip().tolist()
+                        if p1 in other_pins or (p1 == str(ADMIN_PIN).strip() and current_admin_name != "Lambert (Master)"):
+                            st.error("That PIN is already in use by another admin. Please choose a unique PIN.")
                         else:
                             conn = get_db_connection()
-                            c = conn.cursor()
-
-                            all_possible_sheets = core_sheets + ["Station_Events", "Apparatus"]
-
-                            for t in reversed(all_possible_sheets):
-                                if t in excel_file.sheet_names:
-                                    c.execute(f"DELETE FROM {t};")
-
-                            for t in all_possible_sheets:
-                                if t in excel_file.sheet_names:
-                                    df = pd.read_excel(excel_file, sheet_name=t)
-                                    df = df.where(pd.notnull(df), None)
-
-                                    if not df.empty:
-                                        cols = list(df.columns)
-                                        col_str = ", ".join(cols)
-                                        val_placeholders = ", ".join(["%s"] * len(cols))
-                                        query = f"INSERT INTO {t} ({col_str}) VALUES ({val_placeholders})"
-
-                                        records = [tuple(row) for row in df.to_numpy()]
-                                        c.executemany(query, records)
-
-                                    if "id" in [col.lower() for col in df.columns]:
-                                        c.execute(f"SELECT setval(pg_get_serial_sequence('{t}', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM {t};")
-
-                            conn.commit()
-                            conn.close()
-                            st.success("✅ Database successfully restored to snapshot state!")
-                            time.sleep(2)
+                            try:
+                                c = conn.cursor()
+                                c.execute("UPDATE Admin_Users SET Pin_Code = %s WHERE Admin_Name = %s", (p1, current_admin_name))
+                                log_audit_event(c, "Admin PIN Updated", station_today_str, f"{current_admin_name} updated their own PIN/password")
+                                conn.commit()
+                            finally:
+                                conn.close()
+                            st.success("✅ Your PIN has been updated! Use your new PIN in the sidebar.")
+                            time.sleep(1.5)
                             st.rerun()
-                    except Exception as e:
-                        if 'conn' in locals() and conn:
-                            conn.rollback()
-                            conn.close()
-                        st.error(f"Restore failed: {e}")
+        else:
+            st.markdown("#### 🔑 Configured Admin Accounts (`Admin_Users`)")
+            st.caption("Issue individual PINs or passwords to Chief Officers, Captains, Lieutenants, and Acting Officers across all 3 shifts so every edit is attributed to the person who made it.")
+
+            show_pins = st.checkbox("👁️ Show PINs / Passwords in Table", value=False)
+            disp_admins = admin_users_df[['admin_name', 'role', 'active', 'pin_code', 'created_at']].copy() if not admin_users_df.empty else pd.DataFrame(columns=['admin_name', 'role', 'active', 'pin_code', 'created_at'])
+            if not disp_admins.empty:
+                if not show_pins:
+                    disp_admins['pin_code'] = disp_admins['pin_code'].astype(str).apply(lambda x: "•" * max(4, len(x)))
+                disp_admins.rename(
+                    columns={
+                        "admin_name": "Admin / Officer Name",
+                        "role": "Access Role",
+                        "active": "Active",
+                        "pin_code": "PIN / Password",
+                        "created_at": "Created / Updated (ET)"
+                    },
+                    inplace=True
+                )
+                st.dataframe(disp_admins, use_container_width=True, hide_index=True)
+
+            st.divider()
+            adm_col1, adm_col2 = st.columns(2)
+
+            with adm_col1:
+                st.markdown("##### ➕ Issue New Individual PIN / Password")
+                with st.form("add_admin_user_form", clear_on_submit=True):
+                    pick_person = st.selectbox("Select from Personnel Roster (Optional)", ["-- Custom Name / Title --"] + all_names)
+                    custom_admin_name = st.text_input("OR Enter Display Name / Rank (e.g., Capt. Slonaker, Lt. Roach)", placeholder="Leave blank if selecting from dropdown above")
+                    new_pin_code = st.text_input("Assign Individual PIN or Password", placeholder="e.g., 4-8 digit PIN or password")
+                    new_role = st.selectbox(
+                        "Permission Level",
+                        ["Shift Officer", "Full Admin"],
+                        help="Shift Officers can lock seats, draw watches, enter/cancel leave, OT, trades, events, and apparatus status. Full Admins can also manage Admin PINs and restore DB backups."
+                    )
+
+                    if st.form_submit_button("Create Admin Access", type="primary"):
+                        final_admin_name = custom_admin_name.strip() if custom_admin_name.strip() else (pick_person if pick_person != "-- Custom Name / Title --" else "")
+                        clean_new_pin = new_pin_code.strip()
+                        existing_names_lower = [str(n).lower() for n in admin_users_df['admin_name'].tolist()] if not admin_users_df.empty else []
+                        existing_pins = [str(p).strip() for p in admin_users_df['pin_code'].tolist()] if not admin_users_df.empty else []
+
+                        if not final_admin_name:
+                            st.error("Please select a person from the dropdown or enter a display name.")
+                        elif len(clean_new_pin) < 4:
+                            st.error("PIN / Password must be at least 4 characters.")
+                        elif final_admin_name.lower() in existing_names_lower:
+                            st.error(f"An admin account for '{final_admin_name}' already exists. Use the Edit panel on the right to update their PIN.")
+                        elif clean_new_pin in existing_pins:
+                            st.error("That PIN / Password is already assigned to another admin! Each admin must have a unique PIN so the system knows who is logged in.")
+                        else:
+                            conn = get_db_connection()
+                            try:
+                                c = conn.cursor()
+                                now_ts = get_station_timestamp_str()
+                                c.execute(
+                                    "INSERT INTO Admin_Users (Admin_Name, Pin_Code, Role, Active, Created_At) VALUES (%s, %s, %s, %s, %s)",
+                                    (final_admin_name, clean_new_pin, new_role, True, now_ts)
+                                )
+                                log_audit_event(c, "Admin Access Created", station_today_str, f"Issued individual PIN for {final_admin_name} (Role: {new_role})")
+                                conn.commit()
+                            finally:
+                                conn.close()
+                            st.success(f"✅ Issued individual PIN for **{final_admin_name}** ({new_role})!")
+                            time.sleep(1)
+                            st.rerun()
+
+            with adm_col2:
+                st.markdown("##### ✏️ Edit, Deactivate, or Remove Admin")
+                existing_admin_list = admin_users_df['admin_name'].tolist() if not admin_users_df.empty else []
+                sel_edit_admin = st.selectbox("Select Admin Account", ["-- Select --"] + existing_admin_list)
+
+                if sel_edit_admin != "-- Select --":
+                    adm_row = admin_users_df[admin_users_df['admin_name'] == sel_edit_admin].iloc[0]
+                    curr_adm_pin = str(adm_row['pin_code'])
+                    curr_adm_role = str(adm_row.get('role', 'Shift Officer') or 'Shift Officer')
+                    curr_adm_active = bool(adm_row.get('active', True))
+                    role_opts = ["Shift Officer", "Full Admin"]
+
+                    with st.form("edit_admin_user_form"):
+                        upd_pin = st.text_input("PIN / Password", value=curr_adm_pin)
+                        upd_role = st.selectbox("Permission Level", role_opts, index=role_opts.index(curr_adm_role) if curr_adm_role in role_opts else 0)
+                        upd_active = st.checkbox("Account Active (Uncheck to temporarily revoke access)", value=curr_adm_active)
+
+                        b_c1, b_c2 = st.columns(2)
+                        if b_c1.form_submit_button("Save Admin Changes", type="primary"):
+                            clean_upd_pin = upd_pin.strip()
+                            other_pins = admin_users_df[admin_users_df['admin_name'] != sel_edit_admin]['pin_code'].astype(str).str.strip().tolist()
+                            if len(clean_upd_pin) < 4:
+                                st.error("PIN / Password must be at least 4 characters.")
+                            elif clean_upd_pin in other_pins:
+                                st.error("That PIN / Password is already assigned to another admin! Each admin must have a unique PIN.")
+                            else:
+                                conn = get_db_connection()
+                                try:
+                                    c = conn.cursor()
+                                    c.execute(
+                                        "UPDATE Admin_Users SET Pin_Code = %s, Role = %s, Active = %s, Created_At = %s WHERE Admin_Name = %s",
+                                        (clean_upd_pin, upd_role, upd_active, get_station_timestamp_str(), sel_edit_admin)
+                                    )
+                                    status_lbl = "Active" if upd_active else "Inactive"
+                                    log_audit_event(c, "Admin Access Updated", station_today_str, f"Updated admin {sel_edit_admin} (Role: {upd_role}, Status: {status_lbl})")
+                                    conn.commit()
+                                finally:
+                                    conn.close()
+                                st.success(f"✅ Updated **{sel_edit_admin}**!")
+                                time.sleep(1)
+                                st.rerun()
+
+                        if b_c2.form_submit_button("🗑️ Delete Admin"):
+                            if len(existing_admin_list) <= 1:
+                                st.error("Cannot delete the last remaining admin account!")
+                            else:
+                                conn = get_db_connection()
+                                try:
+                                    c = conn.cursor()
+                                    c.execute("DELETE FROM Admin_Users WHERE Admin_Name = %s", (sel_edit_admin,))
+                                    log_audit_event(c, "Admin Access Deleted", station_today_str, f"Deleted admin account: {sel_edit_admin}")
+                                    conn.commit()
+                                finally:
+                                    conn.close()
+                                st.success(f"Removed admin account **{sel_edit_admin}**.")
+                                time.sleep(1)
+                                st.rerun()
