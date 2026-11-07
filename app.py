@@ -362,7 +362,7 @@ def recalculate_ff_seniority():
 
 
 @st.cache_resource
-def init_db(_schema_v=6):
+def init_db(_schema_v=7):
     conn = get_db_connection()
     try:
         with conn.cursor() as c:
@@ -387,7 +387,8 @@ def init_db(_schema_v=6):
                 Instructor BOOLEAN DEFAULT FALSE, Instructor_2 BOOLEAN DEFAULT FALSE, Instructor_3 BOOLEAN DEFAULT FALSE,
                 EMR BOOLEAN DEFAULT FALSE, EMT BOOLEAN DEFAULT FALSE, Paramedic BOOLEAN DEFAULT FALSE,
                 Hire_Date TEXT DEFAULT '2020-01-01', Tie_Breaker INTEGER DEFAULT 9999,
-                Admin_24h_Day TEXT DEFAULT 'None'
+                Admin_24h_Day TEXT DEFAULT 'None',
+                Staffs_Trucks BOOLEAN DEFAULT TRUE
             )""")
             c.execute("""CREATE TABLE IF NOT EXISTS Leave_Ledger (
                 id SERIAL PRIMARY KEY, Target_Date TEXT, Name TEXT, Leave_Type TEXT,
@@ -447,12 +448,44 @@ def init_db(_schema_v=6):
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Hire_Date TEXT DEFAULT '2020-01-01'")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Tie_Breaker INTEGER DEFAULT 9999")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Admin_24h_Day TEXT DEFAULT 'None'")
+            c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Staffs_Trucks BOOLEAN DEFAULT TRUE")
+            c.execute("UPDATE Personnel SET Staffs_Trucks = TRUE WHERE Staffs_Trucks IS NULL")
             c.execute("ALTER TABLE Manual_Overrides ADD COLUMN IF NOT EXISTS Period TEXT DEFAULT 'FULL'")
             c.execute("UPDATE Manual_Overrides SET Period = 'FULL' WHERE Period IS NULL")
 
             # Migrate legacy hardcoded Admin 24h days if not set yet
             c.execute("UPDATE Personnel SET Admin_24h_Day = 'Wednesday' WHERE Name = 'Garver' AND (Admin_24h_Day IS NULL OR Admin_24h_Day = 'None')")
             c.execute("UPDATE Personnel SET Admin_24h_Day = 'Tuesday' WHERE Name = 'McNamara' AND (Admin_24h_Day IS NULL OR Admin_24h_Day = 'None')")
+
+            # Seed / Ensure Chief White is configured as ADMIN and does not staff trucks by default
+            c.execute("SELECT COUNT(*) FROM System_Migrations WHERE Migration_Key = 'seed_chief_white_v1'")
+            if c.fetchone()[0] == 0:
+                c.execute("SELECT COUNT(*) FROM Personnel WHERE LOWER(Name) IN ('white', 'mark white', 'chief white')")
+                if c.fetchone()[0] == 0:
+                    c.execute(
+                        """INSERT INTO Personnel (
+                            Name, Seniority, Core_Manning, Schedule, Shift,
+                            Officer_1, Officer_2, Officer_3, Officer_4,
+                            Inspector, Inspector_2, Inspector_3,
+                            Instructor, Instructor_2, Instructor_3,
+                            EMR, EMT, Paramedic,
+                            Hire_Date, Tie_Breaker, Admin_24h_Day, Staffs_Trucks
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (
+                            'White', 1, False, 'Admin', 'ADMIN',
+                            True, True, True, True,
+                            True, True, False,
+                            True, True, True,
+                            False, False, False,
+                            '1998-01-01', 1, 'None', False
+                        )
+                    )
+                else:
+                    c.execute("UPDATE Personnel SET Shift = 'ADMIN', Schedule = 'Admin', Core_Manning = FALSE, Staffs_Trucks = FALSE WHERE LOWER(Name) IN ('white', 'mark white', 'chief white')")
+                c.execute(
+                    "INSERT INTO System_Migrations (Migration_Key, Applied_At) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    ('seed_chief_white_v1', get_station_timestamp_str())
+                )
 
             # Seed Default Apparatus if Blank
             c.execute("SELECT COUNT(*) FROM Apparatus")
@@ -591,6 +624,11 @@ try:
     else:
         all_personnel_df['admin_24h_day'] = all_personnel_df['admin_24h_day'].fillna('None')
 
+    if 'staffs_trucks' not in all_personnel_df.columns:
+        all_personnel_df['staffs_trucks'] = True
+    else:
+        all_personnel_df['staffs_trucks'] = all_personnel_df['staffs_trucks'].fillna(True).astype(bool)
+
     all_leave_df = pd.read_sql("SELECT * FROM Leave_Ledger", conn)
     all_leave_df.columns = [c.lower() for c in all_leave_df.columns] if not all_leave_df.empty else ["id", "target_date", "name", "leave_type", "start_time", "end_time", "total_hours"]
 
@@ -678,7 +716,8 @@ for _, r in all_personnel_df.iterrows():
         'EMR': bool(r.get('emr', False)),
         'EMT': bool(r.get('emt', False)),
         'Paramedic': bool(r.get('paramedic', False)),
-        'Admin_24h_Day': r.get('admin_24h_day', 'None')
+        'Admin_24h_Day': r.get('admin_24h_day', 'None'),
+        'Staffs_Trucks': bool(r.get('staffs_trucks', True))
     }
     if r['schedule'] == 'Admin':
         admin_names.add(r['name'])
@@ -733,13 +772,26 @@ crash_seats = [("Crash-4", "Driver"), ("Crash-1", "Driver"), ("Crash-3", "Driver
 all_seats_list = [
     "CH-222 | AC", "E-221 | Station Captain", "E-221 | Driver/Operator", "E-221 | Firefighter 1", "E-221 | Firefighter 2",
     "R-221 | Crew Chief", "R-221 | Driver/Operator", "R-221 | Firefighter 1", "ARO | 0700-1200 (Float)",
-    "Crash-1 | Crew Chief", "Crash-1 | Driver", "Crash-3 | Crew Chief", "Crash-3 | Driver",
-    "Crash-4 | Crew Chief", "Crash-4 | Driver", "Crash-8 | Crew Chief", "Crash-8 | Driver",
+    "Crash-1 | Crew Chief", "Crash-1 | Driver", "Crash-1 | Firefighter",
+    "Crash-3 | Crew Chief", "Crash-3 | Driver", "Crash-3 | Firefighter",
+    "Crash-4 | Crew Chief", "Crash-4 | Driver", "Crash-4 | Firefighter",
+    "Crash-8 | Crew Chief", "Crash-8 | Driver", "Crash-8 | Firefighter",
     "Tanker | Crew Chief", "Tanker | Driver"
 ]
 for tr in temp_rigs:
     all_seats_list.append(f"{tr} | Crew Chief")
     all_seats_list.append(f"{tr} | Driver")
+    all_seats_list.append(f"{tr} | Firefighter")
+
+PRIMARY_RIGS = {"CH-222", "E-221", "R-221", "ARO"}
+CROSS_STAFF_RIGS = {"Tanker", "Crash-1", "Crash-3", "Crash-4", "Crash-8"}
+
+
+def is_cross_staff_seat(seat_str):
+    if not seat_str or " | " not in str(seat_str):
+        return False
+    rig_part = str(seat_str).split(" | ")[0].strip()
+    return rig_part in CROSS_STAFF_RIGS or rig_part in temp_rigs
 
 
 def get_empty_rigs():
@@ -754,14 +806,14 @@ def get_empty_rigs():
             "2200-0600": "TBD (Draw)",
             "0600-0700": "TBD (Draw)"
         },
-        "Crash-4": {"Crew Chief": "", "Driver": ""},
-        "Crash-1": {"Crew Chief": "", "Driver": ""},
-        "Crash-3": {"Crew Chief": "", "Driver": ""},
-        "Crash-8": {"Crew Chief": "", "Driver": ""},
+        "Crash-4": {"Crew Chief": "", "Driver": "", "Firefighter": ""},
+        "Crash-1": {"Crew Chief": "", "Driver": "", "Firefighter": ""},
+        "Crash-3": {"Crew Chief": "", "Driver": "", "Firefighter": ""},
+        "Crash-8": {"Crew Chief": "", "Driver": "", "Firefighter": ""},
         "Tanker": {"Crew Chief": "", "Driver": ""}
     }
     for tr in temp_rigs:
-        rigs[tr] = {"Crew Chief": "", "Driver": ""}
+        rigs[tr] = {"Crew Chief": "", "Driver": "", "Firefighter": ""}
     return rigs
 
 
@@ -777,58 +829,118 @@ def apply_cross_staffing_and_watches(rigs, d_watches, oos_list_local):
     R_Driver = rigs.get("R-221", {}).get("Driver/Operator", "")
     R_FF1 = rigs.get("R-221", {}).get("Firefighter 1", "")
 
-    # 1. Engine -> Crash Trucks Priority Cascade
-    if "Crash-4" not in oos_list_local:
+    crash_priority = ["Crash-4", "Crash-8", "Crash-1", "Crash-3"]
+    in_service_crashes = [c for c in crash_priority if c not in oos_list_local]
+
+    # Collect anyone already manually locked onto an OOS Crash truck so they get reassigned
+    displaced_crash_personnel = []
+    for c_rig in crash_priority:
+        if c_rig in oos_list_local:
+            for pos in ["Crew Chief", "Driver", "Firefighter"]:
+                val = rigs.get(c_rig, {}).get(pos, "")
+                if not is_empty(val):
+                    displaced_crash_personnel.append(val)
+                if c_rig in rigs and pos in rigs[c_rig]:
+                    rigs[c_rig][pos] = ""
+
+    def already_on_any_crash(person_name):
+        if is_empty(person_name):
+            return True
+        c_clean = clean_display_name(person_name)
+        for c_rig in in_service_crashes:
+            for pos in ["Crew Chief", "Driver", "Firefighter"]:
+                existing = rigs.get(c_rig, {}).get(pos, "")
+                if not is_empty(existing) and clean_display_name(existing) == c_clean:
+                    return True
+        return False
+
+    # 1. Standard Primary Crash Truck Placements (for in-service Crash trucks)
+    if "Crash-4" not in oos_list_local and not is_empty(E_Capt) and not already_on_any_crash(E_Capt):
         if is_empty(rigs["Crash-4"]["Driver"]):
             rigs["Crash-4"]["Driver"] = E_Capt
-        else:
+        elif is_empty(rigs["Crash-4"]["Crew Chief"]):
             rigs["Crash-4"]["Crew Chief"] = E_Capt
-    else:
-        # C-4 OOS shifts Engine Station Captain to C-8 Crew Chief
-        if "Crash-8" not in oos_list_local:
-            if is_empty(rigs["Crash-8"]["Crew Chief"]):
-                rigs["Crash-8"]["Crew Chief"] = E_Capt
-            else:
-                rigs["Crash-8"]["Driver"] = E_Capt
+        else:
+            displaced_crash_personnel.append(E_Capt)
+    elif "Crash-4" in oos_list_local and not is_empty(E_Capt) and not already_on_any_crash(E_Capt):
+        displaced_crash_personnel.append(E_Capt)
 
-    if "Crash-8" not in oos_list_local:
+    if "Crash-8" not in oos_list_local and not is_empty(E_FF2) and not already_on_any_crash(E_FF2):
         if is_empty(rigs["Crash-8"]["Driver"]):
             rigs["Crash-8"]["Driver"] = E_FF2
         elif is_empty(rigs["Crash-8"]["Crew Chief"]):
             rigs["Crash-8"]["Crew Chief"] = E_FF2
+        else:
+            displaced_crash_personnel.append(E_FF2)
+    elif "Crash-8" in oos_list_local and not is_empty(E_FF2) and not already_on_any_crash(E_FF2):
+        displaced_crash_personnel.append(E_FF2)
 
-    if "Crash-1" not in oos_list_local:
+    if "Crash-1" not in oos_list_local and not is_empty(E_Driver) and not already_on_any_crash(E_Driver):
         if is_empty(rigs["Crash-1"]["Driver"]):
             rigs["Crash-1"]["Driver"] = E_Driver
-        else:
+        elif is_empty(rigs["Crash-1"]["Crew Chief"]):
             rigs["Crash-1"]["Crew Chief"] = E_Driver
+        else:
+            displaced_crash_personnel.append(E_Driver)
+    elif "Crash-1" in oos_list_local and not is_empty(E_Driver) and not already_on_any_crash(E_Driver):
+        displaced_crash_personnel.append(E_Driver)
 
-    if "Crash-3" not in oos_list_local:
+    if "Crash-3" not in oos_list_local and not is_empty(E_FF1) and not already_on_any_crash(E_FF1):
         if is_empty(rigs["Crash-3"]["Driver"]):
             rigs["Crash-3"]["Driver"] = E_FF1
-        else:
+        elif is_empty(rigs["Crash-3"]["Crew Chief"]):
             rigs["Crash-3"]["Crew Chief"] = E_FF1
+        else:
+            displaced_crash_personnel.append(E_FF1)
+    elif "Crash-3" in oos_list_local and not is_empty(E_FF1) and not already_on_any_crash(E_FF1):
+        displaced_crash_personnel.append(E_FF1)
 
-    # 2. Rescue -> Tanker & Crash Truck Cascade
+    # 2. Rescue -> Tanker & OOS Rescue Cascade
     if "Tanker" not in oos_list_local:
+        tanker_existing_clean = {
+            clean_display_name(rigs["Tanker"]["Crew Chief"]),
+            clean_display_name(rigs["Tanker"]["Driver"])
+        }
         if is_empty(rigs["Tanker"]["Crew Chief"]):
-            rigs["Tanker"]["Crew Chief"] = R_CC
+            if not is_empty(R_CC) and clean_display_name(R_CC) not in tanker_existing_clean:
+                rigs["Tanker"]["Crew Chief"] = R_CC
+                tanker_existing_clean.add(clean_display_name(R_CC))
         if is_empty(rigs["Tanker"]["Driver"]):
-            rigs["Tanker"]["Driver"] = R_FF1
+            if not is_empty(R_FF1) and clean_display_name(R_FF1) not in tanker_existing_clean:
+                rigs["Tanker"]["Driver"] = R_FF1
+                tanker_existing_clean.add(clean_display_name(R_FF1))
+            elif not is_empty(R_Driver) and clean_display_name(R_Driver) not in tanker_existing_clean:
+                rigs["Tanker"]["Driver"] = R_Driver
+                tanker_existing_clean.add(clean_display_name(R_Driver))
 
     if "R-221" in oos_list_local:
-        rescue_crew = [p for p in [R_CC, R_Driver, R_FF1] if not is_empty(p)]
-        crash_priorities = ["Crash-4", "Crash-8", "Crash-1", "Crash-3"]
-        available_crashes = [t for t in crash_priorities if t not in oos_list_local]
+        for person in [R_CC, R_Driver, R_FF1]:
+            if not is_empty(person) and not already_on_any_crash(person):
+                displaced_crash_personnel.append(person)
 
-        # Allocate Rescue personnel to the highest priority empty Crash seats
-        for person in rescue_crew:
-            for target_rig in available_crashes:
-                if is_empty(rigs[target_rig]["Crew Chief"]):
-                    rigs[target_rig]["Crew Chief"] = person
-                    break
-                elif is_empty(rigs[target_rig]["Driver"]):
-                    rigs[target_rig]["Driver"] = person
+    # 3. Reassign all displaced Crash / Rescue personnel across in-service Crash trucks:
+    #    Pass 1: Fill up to 2 seats per truck (Driver & Crew Chief) in priority order (Crash-4, Crash-8, Crash-1, Crash-3)
+    #    Pass 2: Fill a 3rd seat (Firefighter) per truck in priority order if necessary
+    for person in displaced_crash_personnel:
+        if is_empty(person) or already_on_any_crash(person):
+            continue
+        placed = False
+        # Pass 1: Fill up to 2 seats per in-service Crash truck
+        for target_rig in in_service_crashes:
+            if is_empty(rigs[target_rig]["Crew Chief"]):
+                rigs[target_rig]["Crew Chief"] = person
+                placed = True
+                break
+            elif is_empty(rigs[target_rig]["Driver"]):
+                rigs[target_rig]["Driver"] = person
+                placed = True
+                break
+        # Pass 2: Fill 3rd seat (Firefighter) if all in-service Crash trucks already have 2 personnel
+        if not placed:
+            for target_rig in in_service_crashes:
+                if is_empty(rigs[target_rig].get("Firefighter", "")):
+                    rigs[target_rig]["Firefighter"] = person
+                    placed = True
                     break
 
     for wp in ["1200-1700", "1700-2200", "2200-0600", "0600-0700"]:
@@ -928,10 +1040,11 @@ def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, p
     am_r = get_empty_rigs()
     pm_r = get_empty_rigs()
     am_p = am_c.copy()
+    am_all_lookup = {clean_display_name(p["Name"]): p["Name"] for p in am_c}
 
-    # 1. AM Overrides
+    # 1a. AM Primary Overrides (CH-222, E-221, R-221, ARO) — consumes person from primary pool
     for seat_name, locked_name in am_ov_local.items():
-        if seat_name not in all_seats_list:
+        if seat_name not in all_seats_list or is_cross_staff_seat(seat_name):
             continue
         rig, pos = seat_name.split(" | ")
         if locked_name == "VACANT":
@@ -941,6 +1054,19 @@ def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, p
                 if clean_display_name(p["Name"]) == locked_name:
                     am_r[rig][pos] = am_p.pop(i)["Name"]
                     break
+
+    # 1b. AM Cross-Staff / Secondary Overrides (Tanker, Crash Trucks, Temp Rigs)
+    #     Locks the seat on the cross-staffed rig while allowing the member to still staff R-221/E-221 if needed
+    for seat_name, locked_name in am_ov_local.items():
+        if seat_name not in all_seats_list or not is_cross_staff_seat(seat_name):
+            continue
+        rig, pos = seat_name.split(" | ")
+        if locked_name == "VACANT":
+            am_r[rig][pos] = "VACANT"
+        elif locked_name in am_all_lookup:
+            am_r[rig][pos] = am_all_lookup[locked_name]
+        else:
+            am_r[rig][pos] = locked_name
 
     # 2. AM Officers
     for rig, pos in officer_seats:
@@ -989,17 +1115,32 @@ def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, p
     if leftover_am_rot:
         am_p = leftover_am_rot + am_p
 
-    # 4. AM Crash
+    # Remove anyone from remaining am_p who was already manually locked onto a Crash seat (unless they already got a primary E-221/R-221/ARO seat)
+    locked_crash_am_clean = {
+        clean_display_name(am_r[r][p])
+        for r in ["Crash-4", "Crash-8", "Crash-1", "Crash-3"]
+        for p in ["Crew Chief", "Driver", "Firefighter"]
+        if am_r.get(r, {}).get(p, "") not in ["", "VACANT"]
+    }
+    am_p = [p for p in am_p if clean_display_name(p["Name"]) not in locked_crash_am_clean]
+
+    # 4. AM Crash (extra personnel above 9; assign to in-service Crash trucks first)
+    for rig, pos in crash_seats:
+        if rig not in oos_list and am_p and am_r[rig][pos] == "":
+            am_r[rig][pos] = am_p.pop(0)["Name"]
+    # If still extra personnel left over, place on any remaining crash_seats so OOS cascade can redistribute them
     for rig, pos in crash_seats:
         if am_p and am_r[rig][pos] == "":
             am_r[rig][pos] = am_p.pop(0)["Name"]
 
     # --- PM ASSIGNMENT ---
     pm_names = {p["Name"]: p for p in pm_c}
+    pm_all_lookup = {clean_display_name(p["Name"]): p["Name"] for p in pm_c}
     assigned_pm_names = set()
 
+    # PM Primary Overrides
     for seat_name, locked_name in pm_ov_local.items():
-        if seat_name not in all_seats_list:
+        if seat_name not in all_seats_list or is_cross_staff_seat(seat_name):
             continue
         rig, pos = seat_name.split(" | ")
         if locked_name == "VACANT":
@@ -1011,12 +1152,35 @@ def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, p
                     assigned_pm_names.add(pm_name)
                     break
 
+    # PM Cross-Staff Overrides (Tanker, Crash Trucks, Temp Rigs)
+    for seat_name, locked_name in pm_ov_local.items():
+        if seat_name not in all_seats_list or not is_cross_staff_seat(seat_name):
+            continue
+        rig, pos = seat_name.split(" | ")
+        if locked_name == "VACANT":
+            pm_r[rig][pos] = "VACANT"
+        elif locked_name in pm_all_lookup:
+            pm_r[rig][pos] = pm_all_lookup[locked_name]
+        else:
+            pm_r[rig][pos] = locked_name
+
+    # Carry over AM primary seats to PM where person continues working PM
     for rig, seats in am_r.items():
+        if rig in CROSS_STAFF_RIGS or rig in temp_rigs:
+            continue
         for pos, am_name in seats.items():
             if am_name not in ["", "VACANT"] and pm_r[rig][pos] == "":
                 if am_name in pm_names and am_name not in assigned_pm_names:
                     pm_r[rig][pos] = am_name
                     assigned_pm_names.add(am_name)
+
+    # Also carry over AM extra Crash Driver assignments if that person wasn't on a primary rig
+    for rig, pos in crash_seats:
+        am_name = am_r.get(rig, {}).get(pos, "")
+        if am_name not in ["", "VACANT"] and pm_r[rig][pos] == "":
+            if am_name in pm_names and am_name not in assigned_pm_names:
+                pm_r[rig][pos] = am_name
+                assigned_pm_names.add(am_name)
 
     structural_pm_pool = [pm_names[n] for n in pm_names if n not in assigned_pm_names]
     structural_pm_pool.sort(key=lambda x: x["Seniority"])
@@ -1066,6 +1230,17 @@ def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, p
     if leftover_pm_rot:
         structural_pm_pool = leftover_pm_rot + structural_pm_pool
 
+    locked_crash_pm_clean = {
+        clean_display_name(pm_r[r][p])
+        for r in ["Crash-4", "Crash-8", "Crash-1", "Crash-3"]
+        for p in ["Crew Chief", "Driver", "Firefighter"]
+        if pm_r.get(r, {}).get(p, "") not in ["", "VACANT"]
+    }
+    structural_pm_pool = [p for p in structural_pm_pool if clean_display_name(p["Name"]) not in locked_crash_pm_clean]
+
+    for rig, pos in crash_seats:
+        if rig not in oos_list and pm_r[rig][pos] == "" and structural_pm_pool:
+            pm_r[rig][pos] = structural_pm_pool.pop(0)["Name"]
     for rig, pos in crash_seats:
         if pm_r[rig][pos] == "" and structural_pm_pool:
             pm_r[rig][pos] = structural_pm_pool.pop(0)["Name"]
@@ -1151,8 +1326,11 @@ for name, suffix in ot_pm_work.items():
 
 am_crew, admin_am = [], []
 for name, suffix in all_working_am:
-    sen = personnel_info.get(name, {}).get('Seniority', 50)
-    sched = personnel_info.get(name, {}).get('Schedule', 'Structural')
+    p_meta = personnel_info.get(name, {})
+    if not p_meta.get('Staffs_Trucks', True) and suffix not in ["Trade", "OT", "Guard"]:
+        continue
+    sen = p_meta.get('Seniority', 50)
+    sched = p_meta.get('Schedule', 'Structural')
     if suffix in ["Trade", "OT", "Guard"]:
         sched = 'Structural'
     d_name = f"{name} ({suffix})" if suffix else name
@@ -1163,8 +1341,11 @@ for name, suffix in all_working_am:
 
 pm_crew, admin_pm = [], []
 for name, suffix in all_working_pm:
-    sen = personnel_info.get(name, {}).get('Seniority', 50)
-    sched = personnel_info.get(name, {}).get('Schedule', 'Structural')
+    p_meta = personnel_info.get(name, {})
+    if not p_meta.get('Staffs_Trucks', True) and suffix not in ["Trade", "OT", "Guard"]:
+        continue
+    sen = p_meta.get('Seniority', 50)
+    sched = p_meta.get('Schedule', 'Structural')
     if suffix in ["Trade", "OT", "Guard"]:
         sched = 'Structural'
     d_name = f"{name} ({suffix})" if suffix else name
@@ -1327,8 +1508,11 @@ def simulate_single_date_roster(sim_dt, running_stats):
 
     s_am_c, s_admin_am = [], []
     for name, suffix in s_aw_am:
-        sen = personnel_info.get(name, {}).get('Seniority', 50)
-        sched = personnel_info.get(name, {}).get('Schedule', 'Structural')
+        p_meta = personnel_info.get(name, {})
+        if not p_meta.get('Staffs_Trucks', True) and suffix not in ["Trade", "OT", "Guard"]:
+            continue
+        sen = p_meta.get('Seniority', 50)
+        sched = p_meta.get('Schedule', 'Structural')
         if suffix in ["Trade", "OT", "Guard"]:
             sched = 'Structural'
         d_name = f"{name} ({suffix})" if suffix else name
@@ -1339,8 +1523,11 @@ def simulate_single_date_roster(sim_dt, running_stats):
 
     s_pm_c, s_admin_pm = [], []
     for name, suffix in s_aw_pm:
-        sen = personnel_info.get(name, {}).get('Seniority', 50)
-        sched = personnel_info.get(name, {}).get('Schedule', 'Structural')
+        p_meta = personnel_info.get(name, {})
+        if not p_meta.get('Staffs_Trucks', True) and suffix not in ["Trade", "OT", "Guard"]:
+            continue
+        sen = p_meta.get('Seniority', 50)
+        sched = p_meta.get('Schedule', 'Structural')
         if suffix in ["Trade", "OT", "Guard"]:
             sched = 'Structural'
         d_name = f"{name} ({suffix})" if suffix else name
@@ -1371,7 +1558,7 @@ def simulate_single_date_roster(sim_dt, running_stats):
             seat_name = f"{rig} {pos}"
             if rig == "ARO" and pos != "0700-1200 (Float)":
                 continue
-            if rig in ["Crash-4", "Crash-1"] and pos == "Crew Chief":
+            if rig in ["Crash-4", "Crash-1", "Crash-3", "Crash-8"] and pos in ["Crew Chief", "Firefighter"]:
                 continue
             if rig == "Tanker":
                 continue
@@ -1539,10 +1726,12 @@ for _, p in all_personnel_df.iterrows():
     sched = str(p.get('schedule', '')).strip()
     p_shift = str(p.get('shift', '')).strip()
     is_core = bool(p.get('core_manning', True))
+    staffs_trucks_flag = bool(p.get('staffs_trucks', True))
     is_admin_member = (sched.lower() == 'admin' or p_shift.upper() == 'ADMIN')
 
-    # Recruits on structural shifts with Core_Manning=False do not count toward the 9-person minimum,
-    # whereas Admin personnel (e.g., Garver 0700-1500 or on their 24h day) step in to fill manning on weekdays.
+    # Personnel marked as Never Staffing Apparatus (e.g., Fire Chief White) or non-core recruits do not count toward apparatus manning
+    if not staffs_trucks_flag:
+        continue
     if not is_core and not is_admin_member:
         continue
 
@@ -1897,8 +2086,13 @@ if selected_page == "📋 Daily Roster":
 
         html = f"<div class='box'><h4>{rig_name}{badge}</h4>"
         for position in am_roster[rig_name]:
-            am_n = am_roster[rig_name][position] if am_roster[rig_name][position] else "VACANT"
-            pm_n = pm_roster[rig_name][position] if pm_roster[rig_name][position] else "VACANT"
+            raw_am = am_roster[rig_name][position]
+            raw_pm = pm_roster[rig_name][position]
+            if position == "Firefighter" and (rig_name.startswith("Crash") or rig_name in temp_rigs):
+                if raw_am in ["", "VACANT"] and raw_pm in ["", "VACANT"]:
+                    continue
+            am_n = raw_am if raw_am else "VACANT"
+            pm_n = raw_pm if raw_pm else "VACANT"
             if rig_name == "ARO" and position != "0700-1200 (Float)":
                 html += f"<div class='seat'><b>{position}:</b> <span>{am_n}</span></div>"
             elif am_n == pm_n:
@@ -1972,6 +2166,10 @@ if selected_page == "📋 Daily Roster":
             st.markdown(f"<h4 style='color: {color_map.get(box_type, '#0288d1')}; margin-top: 0; padding-bottom: 0;'>{rig_name}{badge}</h4>", unsafe_allow_html=True)
             for position in am_roster[rig_name]:
                 am_name, pm_name = am_roster[rig_name][position], pm_roster[rig_name][position]
+                seat_name_check = f"{rig_name} | {position}"
+                if position == "Firefighter" and (rig_name.startswith("Crash") or rig_name in temp_rigs):
+                    if am_name in ["", "VACANT"] and pm_name in ["", "VACANT"] and seat_name_check not in seat_to_override_am and seat_name_check not in seat_to_override_pm:
+                        continue
                 if am_name == "":
                     am_name = "VACANT"
                 if pm_name == "":
@@ -2035,34 +2233,51 @@ if selected_page == "📋 Daily Roster":
                                 # Clear existing locks on this seat
                                 c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, seat_name))
 
-                                # Helper to clear conflicting locks for a person in a given period
-                                def clear_person_period_lock(cur, p_name, target_per):
+                                # Helper to clear conflicting locks for a person in the same seat category (Primary vs Tanker vs Crash)
+                                def clear_person_period_lock(cur, p_name, target_per, target_seat_str):
                                     if p_name in ["-- Auto --", "VACANT"]:
                                         return
-                                    if target_per == "FULL":
-                                        cur.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, p_name))
-                                    elif target_per == "AM":
-                                        cur.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s AND Period = 'AM'", (target_date_str, p_name))
-                                        cur.execute("UPDATE Manual_Overrides SET Period = 'PM' WHERE Target_Date = %s AND Name = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, p_name))
-                                    elif target_per == "PM":
-                                        cur.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s AND Period = 'PM'", (target_date_str, p_name))
-                                        cur.execute("UPDATE Manual_Overrides SET Period = 'AM' WHERE Target_Date = %s AND Name = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, p_name))
+                                    t_rig = target_seat_str.split(" | ")[0].strip()
+                                    cur.execute("SELECT id, Seat, Period FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, p_name))
+                                    existing_rows = cur.fetchall()
+                                    for ex_id, ex_seat, ex_per in existing_rows:
+                                        ex_rig = str(ex_seat).split(" | ")[0].strip()
+                                        same_group = (
+                                            (t_rig in PRIMARY_RIGS and ex_rig in PRIMARY_RIGS)
+                                            or (t_rig == "Tanker" and ex_rig == "Tanker")
+                                            or (t_rig not in PRIMARY_RIGS and t_rig != "Tanker" and ex_rig not in PRIMARY_RIGS and ex_rig != "Tanker")
+                                        )
+                                        if not same_group:
+                                            continue
+                                        ex_p = str(ex_per or "FULL").upper()
+                                        if target_per == "FULL":
+                                            cur.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ex_id,))
+                                        elif target_per == "AM":
+                                            if ex_p == "AM":
+                                                cur.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ex_id,))
+                                            elif ex_p == "FULL":
+                                                cur.execute("UPDATE Manual_Overrides SET Period = 'PM' WHERE id = %s", (ex_id,))
+                                        elif target_per == "PM":
+                                            if ex_p == "PM":
+                                                cur.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ex_id,))
+                                            elif ex_p == "FULL":
+                                                cur.execute("UPDATE Manual_Overrides SET Period = 'AM' WHERE id = %s", (ex_id,))
 
                                 if new_am_val != "-- Auto --" and new_am_val == new_pm_val:
-                                    clear_person_period_lock(c, new_am_val, "FULL")
+                                    clear_person_period_lock(c, new_am_val, "FULL", seat_name)
                                     c.execute(
                                         "INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, 'FULL')",
                                         (target_date_str, new_am_val, seat_name)
                                     )
                                 else:
                                     if new_am_val != "-- Auto --":
-                                        clear_person_period_lock(c, new_am_val, "AM")
+                                        clear_person_period_lock(c, new_am_val, "AM", seat_name)
                                         c.execute(
                                             "INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, 'AM')",
                                             (target_date_str, new_am_val, seat_name)
                                         )
                                     if new_pm_val != "-- Auto --":
-                                        clear_person_period_lock(c, new_pm_val, "PM")
+                                        clear_person_period_lock(c, new_pm_val, "PM", seat_name)
                                         c.execute(
                                             "INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, 'PM')",
                                             (target_date_str, new_pm_val, seat_name)
@@ -2144,9 +2359,11 @@ if selected_page == "📋 Daily Roster":
                 c = conn.cursor()
                 c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s", (target_date_str,))
                 inserts = []
-                seen_am = set()
-                seen_pm = set()
+                seen_am_primary = set()
+                seen_pm_primary = set()
                 for rig, seats in am_roster.items():
+                    if rig not in PRIMARY_RIGS:
+                        continue
                     for pos, am_name in seats.items():
                         seat_name = f"{rig} | {pos}"
                         if seat_name not in all_seats_list:
@@ -2156,20 +2373,20 @@ if selected_page == "📋 Daily Roster":
                         clean_pm = clean_display_name(pm_name) if pm_name else ""
 
                         if clean_am and clean_am == clean_pm:
-                            if (clean_am not in seen_am and clean_am not in seen_pm) or clean_am == "VACANT":
+                            if (clean_am not in seen_am_primary and clean_am not in seen_pm_primary) or clean_am == "VACANT":
                                 inserts.append((target_date_str, clean_am, seat_name, "FULL"))
                                 if clean_am != "VACANT":
-                                    seen_am.add(clean_am)
-                                    seen_pm.add(clean_am)
+                                    seen_am_primary.add(clean_am)
+                                    seen_pm_primary.add(clean_am)
                         else:
-                            if clean_am and (clean_am not in seen_am or clean_am == "VACANT"):
+                            if clean_am and (clean_am not in seen_am_primary or clean_am == "VACANT"):
                                 inserts.append((target_date_str, clean_am, seat_name, "AM"))
                                 if clean_am != "VACANT":
-                                    seen_am.add(clean_am)
-                            if clean_pm and (clean_pm not in seen_pm or clean_pm == "VACANT"):
+                                    seen_am_primary.add(clean_am)
+                            if clean_pm and (clean_pm not in seen_pm_primary or clean_pm == "VACANT"):
                                 inserts.append((target_date_str, clean_pm, seat_name, "PM"))
                                 if clean_pm != "VACANT":
-                                    seen_pm.add(clean_pm)
+                                    seen_pm_primary.add(clean_pm)
                 if inserts:
                     c.executemany("INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, %s)", inserts)
                 log_audit_event(c, "Roster Locked", target_date_str, f"Locked entire current roster ({len(inserts)} seat locks applied)")
@@ -2226,16 +2443,32 @@ if selected_page == "📋 Daily Roster":
                             c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s AND Period = 'PM'", (target_date_str, o_seat))
                             c.execute("UPDATE Manual_Overrides SET Period = 'AM' WHERE Target_Date = %s AND Seat = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, o_seat))
 
-                        # Remove conflicting person lock for the selected period (so a person can be locked in one seat AM and another seat PM)
+                        # Remove conflicting person lock in the same apparatus category (Primary vs Tanker vs Crash)
                         if o_name != "VACANT":
-                            if o_period == "FULL":
-                                c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
-                            elif o_period == "AM":
-                                c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s AND Period = 'AM'", (target_date_str, o_name))
-                                c.execute("UPDATE Manual_Overrides SET Period = 'PM' WHERE Target_Date = %s AND Name = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, o_name))
-                            elif o_period == "PM":
-                                c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s AND Period = 'PM'", (target_date_str, o_name))
-                                c.execute("UPDATE Manual_Overrides SET Period = 'AM' WHERE Target_Date = %s AND Name = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, o_name))
+                            t_rig = o_seat.split(" | ")[0].strip()
+                            c.execute("SELECT id, Seat, Period FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
+                            for ex_id, ex_seat, ex_per in c.fetchall():
+                                ex_rig = str(ex_seat).split(" | ")[0].strip()
+                                same_group = (
+                                    (t_rig in PRIMARY_RIGS and ex_rig in PRIMARY_RIGS)
+                                    or (t_rig == "Tanker" and ex_rig == "Tanker")
+                                    or (t_rig not in PRIMARY_RIGS and t_rig != "Tanker" and ex_rig not in PRIMARY_RIGS and ex_rig != "Tanker")
+                                )
+                                if not same_group:
+                                    continue
+                                ex_p = str(ex_per or "FULL").upper()
+                                if o_period == "FULL":
+                                    c.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ex_id,))
+                                elif o_period == "AM":
+                                    if ex_p == "AM":
+                                        c.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ex_id,))
+                                    elif ex_p == "FULL":
+                                        c.execute("UPDATE Manual_Overrides SET Period = 'PM' WHERE id = %s", (ex_id,))
+                                elif o_period == "PM":
+                                    if ex_p == "PM":
+                                        c.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ex_id,))
+                                    elif ex_p == "FULL":
+                                        c.execute("UPDATE Manual_Overrides SET Period = 'AM' WHERE id = %s", (ex_id,))
 
                         c.execute(
                             "INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, %s)",
@@ -2499,7 +2732,7 @@ elif selected_page == "📅 Leave Calendar":
                                     'Start_Time': t['start_time'], 'End_Time': t['end_time'], 'Total_Hours': t['total_hours']
                                 })
 
-                    core_names = all_personnel_df[(all_personnel_df['shift'] == day_shift) & (all_personnel_df['core_manning'] == True)]['name'].tolist()
+                    core_names = all_personnel_df[(all_personnel_df['shift'] == day_shift) & (all_personnel_df['core_manning'] == True) & (all_personnel_df['staffs_trucks'] == True)]['name'].tolist()
 
                     full_day_leaves = [l['name'] for _, l in day_leave.iterrows() if float(l['total_hours']) >= 24.0] if not day_leave.empty else []
                     full_day_trade_offs = [t['Off_Name'] for t in day_trades if float(t['Total_Hours']) >= 24.0]
@@ -2509,7 +2742,7 @@ elif selected_page == "📅 Leave Calendar":
                     est_manning = len(core_names) - core_on_leave - core_trading_off + len(day_ot) + len(day_trades)
 
                     if est_manning < 9 and current_date.weekday() < 5:
-                        admin_names_list = all_personnel_df[all_personnel_df['shift'] == 'ADMIN']['name'].tolist()
+                        admin_names_list = all_personnel_df[(all_personnel_df['shift'] == 'ADMIN') & (all_personnel_df['staffs_trucks'] == True)]['name'].tolist()
                         admins_on_leave = len([n for n in full_day_leaves if n in admin_names_list]) + len([n for n in full_day_trade_offs if n in admin_names_list])
                         available_admins = max(0, len(admin_names_list) - admins_on_leave)
                         est_manning += min((9 - est_manning), available_admins)
@@ -2927,7 +3160,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
         display_df = all_personnel_df.copy()
         display_cols = [
             'seniority', 'name', 'shift', 'schedule', 'admin_24h_day',
-            'hire_date', 'tie_breaker', 'core_manning',
+            'hire_date', 'tie_breaker', 'core_manning', 'staffs_trucks',
             'emr', 'emt', 'paramedic',
             'officer_1', 'officer_2', 'officer_3', 'officer_4',
             'inspector', 'inspector_2', 'inspector_3',
@@ -3040,7 +3273,8 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 a_admin_day = st.selectbox("Admin 24h Weekday (if Admin Schedule)", ADMIN_DAY_OPTIONS)
 
                 st.markdown("<br>", unsafe_allow_html=True)
-                a_core = st.checkbox("Counts Towards Minimum Manning (Core)", value=False, help="Uncheck this for recruits so they do not count towards the 9-person minimum.")
+                a_core = st.checkbox("Counts Towards Minimum Manning (Core)", value=False, help="Uncheck this for recruits or non-riding Admin so they do not count towards the 9-person minimum.")
+                a_staffs = st.checkbox("Eligible to Staff Apparatus / Trucks", value=True, help="Uncheck this for personnel (such as the Fire Chief) who are on the roster and can hold an Admin PIN, but never staff apparatus.")
 
                 st.markdown("**Certifications**")
                 c1, c2, c3, c4 = st.columns(4)
@@ -3075,15 +3309,15 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                                     Inspector, Inspector_2, Inspector_3,
                                     Instructor, Instructor_2, Instructor_3,
                                     EMR, EMT, Paramedic,
-                                    Hire_Date, Tie_Breaker, Admin_24h_Day
-                                ) VALUES (%s, 999, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                                    Hire_Date, Tie_Breaker, Admin_24h_Day, Staffs_Trucks
+                                ) VALUES (%s, 999, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                                 (
                                     a_name.strip(), a_core, a_sched, a_shift,
                                     a_off1, a_off2, a_off3, a_off4,
                                     a_insp, a_insp2, a_insp3,
                                     a_inst, a_inst2, a_inst3,
                                     a_emr, a_emt, a_med,
-                                    a_hire.strftime("%Y-%m-%d"), int(a_tie), a_admin_day
+                                    a_hire.strftime("%Y-%m-%d"), int(a_tie), a_admin_day, a_staffs
                                 )
                             )
                             log_audit_event(c, "Personnel Added", station_today_str, f"Added {a_name.strip()} (Shift: {a_shift}, Sched: {a_sched}, Hire: {a_hire.strftime('%Y-%m-%d')}, Tie: {int(a_tie)})")
@@ -3147,6 +3381,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
 
                     st.markdown("<br>", unsafe_allow_html=True)
                     e_core = st.checkbox("Counts Towards Minimum Manning (Core)", value=bool(target_data.get('core_manning', True)))
+                    e_staffs = st.checkbox("Eligible to Staff Apparatus / Trucks", value=bool(target_data.get('staffs_trucks', True)), help="Uncheck this for personnel (such as the Fire Chief) who never staff apparatus.")
 
                     st.markdown("**Certifications**")
                     c1, c2, c3, c4 = st.columns(4)
@@ -3181,7 +3416,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                                     Inspector=%s, Inspector_2=%s, Inspector_3=%s,
                                     Instructor=%s, Instructor_2=%s, Instructor_3=%s,
                                     EMR=%s, EMT=%s, Paramedic=%s,
-                                    Admin_24h_Day=%s
+                                    Admin_24h_Day=%s, Staffs_Trucks=%s
                                 WHERE Name=%s""",
                                 (
                                     e_sen, e_shift, e_sched, e_core,
@@ -3190,7 +3425,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                                     e_insp, e_insp2, e_insp3,
                                     e_inst, e_inst2, e_inst3,
                                     e_emr, e_emt, e_med,
-                                    e_admin_day, edit_target
+                                    e_admin_day, e_staffs, edit_target
                                 )
                             )
                             log_audit_event(c, "Personnel Updated", station_today_str, f"Updated {edit_target} (Sen: {e_sen}, Shift: {e_shift}, Sched: {e_sched}, Hire: {e_hire.strftime('%Y-%m-%d')}, Tie: {int(e_tie)})")
@@ -3369,7 +3604,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 conn = get_db_connection()
                 try:
                     table_queries = {
-                        "Personnel": "SELECT name, seniority, core_manning, schedule, shift, emr, emt, paramedic, officer_1, officer_2, officer_3, officer_4, inspector, inspector_2, inspector_3, instructor, instructor_2, instructor_3, hire_date, tie_breaker, admin_24h_day FROM Personnel",
+                        "Personnel": "SELECT name, seniority, core_manning, staffs_trucks, schedule, shift, emr, emt, paramedic, officer_1, officer_2, officer_3, officer_4, inspector, inspector_2, inspector_3, instructor, instructor_2, instructor_3, hire_date, tie_breaker, admin_24h_day FROM Personnel",
                         "Overtime_Buckets": "SELECT name, seniority, shift, current_hours, contact FROM Overtime_Buckets",
                         "Leave_Ledger": "SELECT id, target_date, name, leave_type, start_time, end_time, total_hours FROM Leave_Ledger",
                         "Overtime_Log": "SELECT id, target_date, name, ot_type, start_time, end_time, total_hours FROM Overtime_Log",
