@@ -362,7 +362,7 @@ def recalculate_ff_seniority():
 
 
 @st.cache_resource
-def init_db(_schema_v=7):
+def init_db(_schema_v=8):
     conn = get_db_connection()
     try:
         with conn.cursor() as c:
@@ -429,6 +429,12 @@ def init_db(_schema_v=7):
                 Action_Type TEXT,
                 Target_Date TEXT,
                 Details TEXT
+            )""")
+            c.execute("""CREATE TABLE IF NOT EXISTS Daily_Notes (
+                Target_Date TEXT PRIMARY KEY,
+                Notes_Text TEXT,
+                Updated_By TEXT,
+                Updated_At TEXT
             )""")
 
             # Ensure backward-compatible schema migrations for existing Personnel tables
@@ -669,6 +675,9 @@ try:
 
     app_df = pd.read_sql("SELECT * FROM Apparatus", conn)
     app_df.columns = [c.lower() for c in app_df.columns]
+
+    daily_notes_df = pd.read_sql("SELECT * FROM Daily_Notes WHERE Target_Date = %s", conn, params=(target_date_str,))
+    daily_notes_df.columns = [c.lower() for c in daily_notes_df.columns] if not daily_notes_df.empty else ["target_date", "notes_text", "updated_by", "updated_at"]
 finally:
     conn.close()
 
@@ -2021,6 +2030,23 @@ if not day_events.empty:
 else:
     events_html = "<li>No events logged for this date.</li>"
 
+current_daily_note = str(daily_notes_df.iloc[0]['notes_text'] or "").strip() if not daily_notes_df.empty else ""
+current_note_author = str(daily_notes_df.iloc[0].get('updated_by') or "") if not daily_notes_df.empty else ""
+current_note_time = str(daily_notes_df.iloc[0].get('updated_at') or "") if not daily_notes_df.empty else ""
+
+if current_daily_note:
+    safe_note_html = (
+        current_daily_note
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\n", "<br>")
+    )
+    print_notes_block_html = f"<div class='notes-box'><h3>📌 Daily Shift Notes / Pass-On</h3><div class='notes-content'>{safe_note_html}</div></div>"
+else:
+    print_notes_block_html = ""
+
+
 
 # --- 4. STREAMLIT VISUALS & PAGES ---
 if roster_generation_error:
@@ -2119,8 +2145,10 @@ if selected_page == "📋 Daily Roster":
         .box {{ border: 1px solid #000; padding: 6px; border-radius: 4px; margin-bottom: 8px; page-break-inside: avoid; background: #fff; }}
         .box h4 {{ margin: 0 0 6px 0; color: #000; font-size: 15px; border-bottom: 1px solid #ccc; padding-bottom: 2px; }}
         .seat {{ display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 12px; }}
-        .bottom-section {{ display: flex; gap: 15px; page-break-inside: avoid; }}
-        .details {{ width: 50%; border: 1px solid #000; padding: 8px; border-radius: 4px; }}
+        .bottom-section {{ display: flex; gap: 12px; page-break-inside: avoid; margin-bottom: 10px; }}
+        .details {{ flex: 1; border: 1px solid #000; padding: 8px; border-radius: 4px; background: #fff; }}
+        .notes-box {{ border: 1px solid #000; padding: 8px 10px; border-radius: 4px; page-break-inside: avoid; background: #fff; margin-top: 2px; }}
+        .notes-content {{ font-size: 12.5px; line-height: 1.4; margin-top: 4px; white-space: normal; }}
         ul {{ margin-top: 5px; padding-left: 20px; margin-bottom: 0; }}
         li {{ margin-bottom: 3px; }}
     </style></head>
@@ -2141,6 +2169,7 @@ if selected_page == "📋 Daily Roster":
             <div class="details"><h3>🧹 Station Details</h3><ul>{station_details_html}</ul></div>
             <div class="details"><h3>📆 Events & Training</h3><ul>{events_html}</ul></div>
         </div>
+        {print_notes_block_html}
     </body></html>
     """
 
@@ -2505,8 +2534,78 @@ if selected_page == "📋 Daily Roster":
 
     st.divider()
     day_of_week = target_date.strftime("%A")
-    st.subheader(f"🧹 Station Details ({day_of_week})")
-    st.markdown(f"<ul style='margin-top: 0px;'>{station_details_html}</ul>", unsafe_allow_html=True)
+    
+    with st.container(border=True):
+        det_col, notes_col = st.columns([1.1, 1])
+
+        with det_col:
+            st.subheader(f"🧹 Station Details ({day_of_week})")
+            st.markdown(f"<ul style='margin-top: 0px;'>{station_details_html}</ul>", unsafe_allow_html=True)
+
+        with notes_col:
+            st.subheader("📌 Daily Shift Notes / Pass-On")
+            if is_admin:
+                with st.form(f"daily_notes_form_{target_date_str}"):
+                    note_input = st.text_area(
+                        "Shift Notes (printed neatly on the Daily Roster)",
+                        value=current_daily_note,
+                        height=120,
+                        placeholder="Type any shift announcements, pass-on notes, hydrant/airfield notices, or special instructions for this date...",
+                        label_visibility="collapsed"
+                    )
+                    if current_daily_note and current_note_author:
+                        st.caption(f"Last updated by **{current_note_author}** at {current_note_time}")
+                    nc_btn1, nc_btn2 = st.columns([3, 1])
+                    save_note_btn = nc_btn1.form_submit_button("💾 Save Shift Notes", type="primary", use_container_width=True)
+                    clear_note_btn = nc_btn2.form_submit_button("🗑️ Clear", use_container_width=True)
+
+                    if save_note_btn:
+                        cleaned_note = note_input.strip()
+                        conn = get_db_connection()
+                        try:
+                            c = conn.cursor()
+                            now_ts = get_station_timestamp_str()
+                            if cleaned_note:
+                                c.execute(
+                                    """INSERT INTO Daily_Notes (Target_Date, Notes_Text, Updated_By, Updated_At)
+                                       VALUES (%s, %s, %s, %s)
+                                       ON CONFLICT (Target_Date) DO UPDATE SET
+                                           Notes_Text = EXCLUDED.Notes_Text,
+                                           Updated_By = EXCLUDED.Updated_By,
+                                           Updated_At = EXCLUDED.Updated_At""",
+                                    (target_date_str, cleaned_note, current_admin_name, now_ts)
+                                )
+                                log_audit_event(c, "Daily Notes Updated", target_date_str, f"Updated shift notes ({len(cleaned_note)} chars)")
+                            else:
+                                c.execute("DELETE FROM Daily_Notes WHERE Target_Date = %s", (target_date_str,))
+                                log_audit_event(c, "Daily Notes Cleared", target_date_str, "Cleared shift notes")
+                            conn.commit()
+                        finally:
+                            conn.close()
+                        st.success("Shift notes saved!")
+                        time.sleep(0.6)
+                        st.rerun()
+
+                    if clear_note_btn:
+                        conn = get_db_connection()
+                        try:
+                            c = conn.cursor()
+                            c.execute("DELETE FROM Daily_Notes WHERE Target_Date = %s", (target_date_str,))
+                            log_audit_event(c, "Daily Notes Cleared", target_date_str, "Cleared shift notes")
+                            conn.commit()
+                        finally:
+                            conn.close()
+                        st.success("Shift notes cleared!")
+                        time.sleep(0.6)
+                        st.rerun()
+            else:
+                if current_daily_note:
+                    with st.container(border=True):
+                        st.markdown(current_daily_note.replace("\n", "  \n"))
+                        if current_note_author:
+                            st.caption(f"Posted by **{current_note_author}** ({current_note_time})")
+                else:
+                    st.info("No shift notes posted for this date.")
 
 
 # ==========================================
@@ -3616,7 +3715,8 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                         "Station_Events": "SELECT id, target_date, event_type, description, start_time, end_time, instructor FROM Station_Events",
                         "Apparatus": "SELECT Rig_Name, Status FROM Apparatus",
                         "Admin_Users": "SELECT Admin_Name, Pin_Code, Role, Active, Created_At FROM Admin_Users",
-                        "Audit_Log": "SELECT id, Timestamp_ET, Admin_Name, Action_Type, Target_Date, Details FROM Audit_Log"
+                        "Audit_Log": "SELECT id, Timestamp_ET, Admin_Name, Action_Type, Target_Date, Details FROM Audit_Log",
+                        "Daily_Notes": "SELECT Target_Date, Notes_Text, Updated_By, Updated_At FROM Daily_Notes"
                     }
 
                     output = io.BytesIO()
@@ -3665,7 +3765,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                                 conn = get_db_connection()
                                 c = conn.cursor()
 
-                                all_possible_sheets = core_sheets + ["Station_Events", "Apparatus", "Admin_Users", "Audit_Log"]
+                                all_possible_sheets = core_sheets + ["Station_Events", "Apparatus", "Admin_Users", "Audit_Log", "Daily_Notes"]
 
                                 for t in reversed(all_possible_sheets):
                                     if t in excel_file.sheet_names:
