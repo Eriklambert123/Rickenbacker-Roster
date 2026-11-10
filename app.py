@@ -362,7 +362,7 @@ def recalculate_ff_seniority():
 
 
 @st.cache_resource
-def init_db(_schema_v=8):
+def init_db(_schema_v=10):
     conn = get_db_connection()
     try:
         with conn.cursor() as c:
@@ -436,6 +436,24 @@ def init_db(_schema_v=8):
                 Updated_By TEXT,
                 Updated_At TEXT
             )""")
+            c.execute("""CREATE TABLE IF NOT EXISTS Extra_Station_Details (
+                id SERIAL PRIMARY KEY,
+                Target_Date TEXT,
+                Task TEXT,
+                Assigned_To TEXT,
+                Created_By TEXT
+            )""")
+            c.execute("""CREATE TABLE IF NOT EXISTS Recurring_Reminders (
+                id SERIAL PRIMARY KEY,
+                Title TEXT,
+                Rule_Type TEXT,
+                Day_Val INTEGER DEFAULT 1,
+                Weekday_Val TEXT DEFAULT 'Monday',
+                Display_Section TEXT DEFAULT 'Station Details',
+                Assigned_To TEXT DEFAULT 'All On-Duty Crew',
+                Active BOOLEAN DEFAULT TRUE,
+                Created_By TEXT
+            )""")
 
             # Ensure backward-compatible schema migrations for existing Personnel tables
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Officer_1 BOOLEAN DEFAULT FALSE")
@@ -491,6 +509,26 @@ def init_db(_schema_v=8):
                 c.execute(
                     "INSERT INTO System_Migrations (Migration_Key, Applied_At) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                     ('seed_chief_white_v1', get_station_timestamp_str())
+                )
+
+            # Seed Default 1st-of-Month Recurring Reminders if table is empty
+            c.execute("SELECT COUNT(*) FROM System_Migrations WHERE Migration_Key = 'seed_recurring_reminders_v1'")
+            if c.fetchone()[0] == 0:
+                c.execute("SELECT COUNT(*) FROM Recurring_Reminders")
+                if c.fetchone()[0] == 0:
+                    default_reminders = [
+                        ("Vehicle Mileage & Engine Hours", "Monthly (Day of Month)", 1, "Monday", "Station Details", "All Drivers", True, "System Default"),
+                        ("Check Airpacks (SCBA Monthly Inspection)", "Monthly (Day of Month)", 1, "Monday", "Station Details", "All On-Duty Crew", True, "System Default")
+                    ]
+                    c.executemany(
+                        """INSERT INTO Recurring_Reminders
+                           (Title, Rule_Type, Day_Val, Weekday_Val, Display_Section, Assigned_To, Active, Created_By)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                        default_reminders
+                    )
+                c.execute(
+                    "INSERT INTO System_Migrations (Migration_Key, Applied_At) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    ('seed_recurring_reminders_v1', get_station_timestamp_str())
                 )
 
             # Seed Default Apparatus if Blank
@@ -592,11 +630,11 @@ try:
     shift_mod = (target_date - anchor_date).days % 3
 
     if shift_mod == 0:
-        selected_shift, top_shift_color = "A-Shift", "#4CAF50"
+        selected_shift, top_shift_color = "A-Shift", "#F44336"
     elif shift_mod == 1:
         selected_shift, top_shift_color = "B-Shift", "#2196F3"
     else:
-        selected_shift, top_shift_color = "C-Shift", "#F44336"
+        selected_shift, top_shift_color = "C-Shift", "#4CAF50"
 
     st.sidebar.divider()
 
@@ -678,6 +716,12 @@ try:
 
     daily_notes_df = pd.read_sql("SELECT * FROM Daily_Notes WHERE Target_Date = %s", conn, params=(target_date_str,))
     daily_notes_df.columns = [c.lower() for c in daily_notes_df.columns] if not daily_notes_df.empty else ["target_date", "notes_text", "updated_by", "updated_at"]
+
+    extra_details_df = pd.read_sql("SELECT * FROM Extra_Station_Details WHERE Target_Date = %s ORDER BY id ASC", conn, params=(target_date_str,))
+    extra_details_df.columns = [c.lower() for c in extra_details_df.columns] if not extra_details_df.empty else ["id", "target_date", "task", "assigned_to", "created_by"]
+
+    recurring_reminders_df = pd.read_sql("SELECT * FROM Recurring_Reminders ORDER BY id ASC", conn)
+    recurring_reminders_df.columns = [c.lower() for c in recurring_reminders_df.columns] if not recurring_reminders_df.empty else ["id", "title", "rule_type", "day_val", "weekday_val", "display_section", "assigned_to", "active", "created_by"]
 finally:
     conn.close()
 
@@ -1888,12 +1932,33 @@ if not ot_df.empty:
         scheduled_ot_list.append(f"✅ {clean_name}: {o['start_time']}-{o['end_time']} ({hrs}h)")
 
 scheduled_leave_list = []
+scheduled_leave_ui_list = []
 if not leave_df.empty:
     for _, l in leave_df.iterrows():
         hrs = int(l['total_hours']) if l['total_hours'] % 1 == 0 else l['total_hours']
         scheduled_leave_list.append(f"{l['name']} ({hrs}h)")
+        l_icon = get_icon(l['leave_type'])
+        scheduled_leave_ui_list.append(f"{l_icon} {l['name']}: {l['start_time']}-{l['end_time']} ({hrs}h)")
+
+day_trades_roster = []
+scheduled_trades_list = []
+scheduled_trades_ui_list = []
+if not all_trades_df.empty:
+    for _, t in all_trades_df.iterrows():
+        hrs = int(t['total_hours']) if float(t['total_hours']) % 1 == 0 else t['total_hours']
+        t_span = f"{t['start_time']}-{t['end_time']}" if float(t['total_hours']) < 24 else "0700-0700"
+        if t['date_1'] == target_date_str:
+            day_trades_roster.append(t)
+            scheduled_trades_list.append(f"{t['name_2']} for {t['name_1']} ({hrs}h)")
+            scheduled_trades_ui_list.append(f"🔀 {t['name_2']} ➔ {t['name_1']}: {t_span} ({hrs}h)")
+        elif t['date_2'] == target_date_str:
+            day_trades_roster.append(t)
+            scheduled_trades_list.append(f"{t['name_1']} for {t['name_2']} ({hrs}h)")
+            scheduled_trades_ui_list.append(f"🔀 {t['name_1']} ➔ {t['name_2']}: {t_span} ({hrs}h)")
+
 scheduled_leave_str = ", ".join(scheduled_leave_list) if scheduled_leave_list else "None"
 scheduled_ot_str = ", ".join([s.split(":")[0].replace("✅ ", "") for s in scheduled_ot_list]) if scheduled_ot_list else "None"
+scheduled_trades_str = ", ".join(scheduled_trades_list) if scheduled_trades_list else "None"
 
 total_on_duty_am = len(am_crew)
 total_on_duty_pm = len(pm_crew)
@@ -2013,20 +2078,74 @@ def resolve_detail_names(rig, seat_def):
         return n if n and n != "VACANT" else "VACANT"
 
 
-station_details_html = ""
+def is_recurring_reminder_due(rem_row, check_dt):
+    if not bool(rem_row.get('active', True)):
+        return False
+    rtype = str(rem_row.get('rule_type', '') or '').strip()
+    try:
+        d_val = int(rem_row.get('day_val', 1) or 1)
+    except Exception:
+        d_val = 1
+    w_val = str(rem_row.get('weekday_val', 'Monday') or 'Monday').strip()
+    w_name = check_dt.strftime("%A")
+
+    if rtype == "Monthly (Day of Month)":
+        return check_dt.day == d_val
+    elif rtype == "Monthly on 1st, 2nd & 3rd (All 3 Shifts)":
+        return check_dt.day in (1, 2, 3)
+    elif rtype == "Weekly (Day of Week)":
+        return w_name.lower() == w_val.lower()
+    elif rtype == "Monthly (1st Weekday of Month)":
+        return w_name.lower() == w_val.lower() and 1 <= check_dt.day <= 7
+    elif rtype == "Every Shift (Daily)":
+        return True
+    return False
+
+
+due_reminders_details = []
+due_reminders_events = []
+if not recurring_reminders_df.empty:
+    for _, rem in recurring_reminders_df.iterrows():
+        if is_recurring_reminder_due(rem, target_date):
+            sec = str(rem.get('display_section', 'Station Details') or 'Station Details')
+            if sec == "Events & Training":
+                due_reminders_events.append(rem)
+            else:
+                due_reminders_details.append(rem)
+
+station_details_items = []
 if day_of_week in daily_details:
     for d in daily_details[day_of_week]:
         assigned_names = resolve_detail_names(d["Rig"], d["Seat"])
-        station_details_html += f"<li><b>{d['Task']}</b> - Assigned: {d['Pos_Name']} ({assigned_names})</li>"
+        station_details_items.append(f"<li><b>{d['Task']}</b> — Assigned: {d['Pos_Name']} ({assigned_names})</li>")
+
+for rem in due_reminders_details:
+    r_assign = str(rem.get('assigned_to', '') or 'All On-Duty Crew').strip()
+    station_details_items.append(f"<li>🔔 <b>[Recurring Reminder] {rem['title']}</b> — Assigned: {r_assign}</li>")
+
+if not extra_details_df.empty:
+    for _, exd in extra_details_df.iterrows():
+        ex_assign = str(exd.get('assigned_to', '') or 'All On-Duty Crew').strip()
+        station_details_items.append(f"<li>➕ <b>[Extra Detail] {exd['task']}</b> — Assigned: {ex_assign}</li>")
+
+if station_details_items:
+    station_details_html = "".join(station_details_items)
 else:
     station_details_html = "<li>No specific station deep-cleaning details are officially assigned.</li>"
 
-events_html = ""
+events_items = []
 day_events = events_df[events_df['target_date'] == target_date_str] if not events_df.empty else pd.DataFrame()
 if not day_events.empty:
     for _, ev in day_events.iterrows():
         inst = f" (Instructor: {ev['instructor']})" if pd.notna(ev.get('instructor')) and ev.get('instructor') not in ["", "-- None --"] else ""
-        events_html += f"<li><b>{ev['event_type']}:</b> {ev['description']} | {ev['start_time']}-{ev['end_time']}{inst}</li>"
+        events_items.append(f"<li><b>{ev['event_type']}:</b> {ev['description']} | {ev['start_time']}-{ev['end_time']}{inst}</li>")
+
+for rem in due_reminders_events:
+    r_assign = str(rem.get('assigned_to', '') or 'All On-Duty Crew').strip()
+    events_items.append(f"<li>🔔 <b>[Recurring Reminder] {rem['title']}</b> ({r_assign})</li>")
+
+if events_items:
+    events_html = "".join(events_items)
 else:
     events_html = "<li>No events logged for this date.</li>"
 
@@ -2087,7 +2206,7 @@ dynamic_years = sorted(list(set(range(min(2025, current_yr - 1), max(2028, curre
 if selected_page == "📋 Daily Roster":
     st.markdown(f"<h2 style='color:{top_shift_color}; margin-top: -15px;'>{selected_shift}</h2>", unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4, col5 = st.columns([1.0, 1.15, 1.25, 1.25, 1.25])
     with col1:
         st.metric("Total On-Duty (0700 / 1500)", manning_disp)
     with col2:
@@ -2101,6 +2220,22 @@ if selected_page == "📋 Daily Roster":
         st.metric("Scheduled OT", f"{len(ot_df)} Filled")
         if not ot_df.empty:
             st.markdown(f"<div style='font-size: 0.85em; color: #1565C0; line-height: 1.4; margin-top: -10px;'>{'<br>'.join(scheduled_ot_list)}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='font-size: 0.85em; color: #757575; margin-top: -10px;'>None</div>", unsafe_allow_html=True)
+
+    with col4:
+        st.metric("Scheduled Leave", f"{len(leave_df)} Off")
+        if scheduled_leave_ui_list:
+            st.markdown(f"<div style='font-size: 0.85em; color: #e65100; line-height: 1.4; margin-top: -10px;'>{'<br>'.join(scheduled_leave_ui_list)}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='font-size: 0.85em; color: #757575; margin-top: -10px;'>None</div>", unsafe_allow_html=True)
+
+    with col5:
+        st.metric("Shift Trades", f"{len(day_trades_roster)} Active")
+        if scheduled_trades_ui_list:
+            st.markdown(f"<div style='font-size: 0.85em; color: #6a1b9a; line-height: 1.4; margin-top: -10px;'>{'<br>'.join(scheduled_trades_ui_list)}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='font-size: 0.85em; color: #757575; margin-top: -10px;'>None</div>", unsafe_allow_html=True)
 
     st.markdown("<hr style='margin: 0.5em 0;'>", unsafe_allow_html=True)
 
@@ -2159,6 +2294,7 @@ if selected_page == "📋 Daily Roster":
             <div>OT Needed: {ot_needed_disp}</div>
             <div>Scheduled OT: {scheduled_ot_str}</div>
             <div>Scheduled Leave: {scheduled_leave_str}</div>
+            <div>Shift Trades: {scheduled_trades_str}</div>
         </div>
         <div class="trucks">
             <div class="col">{render_print_rig("CH-222")}{render_print_rig("R-221")}{render_print_rig("Tanker")}</div>
@@ -2370,8 +2506,134 @@ if selected_page == "📋 Daily Roster":
             display_rig(tr, "info")
 
     st.divider()
+    day_of_week = target_date.strftime("%A")
+
+    # --- DIRECTLY UNDER TRUCK ASSIGNMENTS: STATION DETAILS (LEFT) & SHIFT NOTES / EVENTS (RIGHT) ---
+    det_col, notes_col = st.columns([1.15, 1])
+
+    with det_col:
+        with st.container(border=True):
+            st.subheader(f"🧹 Station Details ({day_of_week})")
+            st.markdown(f"<ul style='margin-top: 0px;'>{station_details_html}</ul>", unsafe_allow_html=True)
+
+            if is_admin:
+                if not extra_details_df.empty:
+                    st.caption("**Active Extra Details on This Date:**")
+                    for _, exd in extra_details_df.iterrows():
+                        ex_c1, ex_c2 = st.columns([5, 1])
+                        ex_c1.markdown(f"➕ **{exd['task']}** *({exd['assigned_to']})*")
+                        if ex_c2.button("🗑️", key=f"del_ex_det_{exd['id']}", use_container_width=True):
+                            conn = get_db_connection()
+                            try:
+                                c = conn.cursor()
+                                c.execute("DELETE FROM Extra_Station_Details WHERE id = %s", (exd['id'],))
+                                log_audit_event(c, "Extra Detail Removed", target_date_str, f"Removed extra detail: {exd['task']}")
+                                conn.commit()
+                            finally:
+                                conn.close()
+                            st.rerun()
+
+                with st.expander("➕ Add Extra Station Detail for This Date"):
+                    with st.form(f"add_extra_detail_form_{target_date_str}", clear_on_submit=True):
+                        ex_task = st.text_input("Extra Detail / Task Description", placeholder="e.g., Wash bay floors, hose testing, inventory check...")
+                        assign_choices = [
+                            "All On-Duty Crew", "E-221 Crew", "R-221 Crew",
+                            "Rescue Driver", "Rescue Backseat", "Engine Driver", "Engine Backseat", "ARO"
+                        ] + on_duty_dropdown_list
+                        ex_assign = st.selectbox("Assigned To", assign_choices)
+                        ex_custom_assign = st.text_input("OR Custom Assignment (Optional)", placeholder="Leave blank to use dropdown above")
+                        if st.form_submit_button("Add Extra Detail", type="primary", use_container_width=True):
+                            if not ex_task.strip():
+                                st.error("Please enter a task description.")
+                            else:
+                                final_assign = ex_custom_assign.strip() if ex_custom_assign.strip() else ex_assign
+                                conn = get_db_connection()
+                                try:
+                                    c = conn.cursor()
+                                    c.execute(
+                                        "INSERT INTO Extra_Station_Details (Target_Date, Task, Assigned_To, Created_By) VALUES (%s, %s, %s, %s)",
+                                        (target_date_str, ex_task.strip(), final_assign, current_admin_name)
+                                    )
+                                    log_audit_event(c, "Extra Detail Added", target_date_str, f"Added extra station detail: '{ex_task.strip()}' ({final_assign})")
+                                    conn.commit()
+                                finally:
+                                    conn.close()
+                                st.success("Extra station detail added!")
+                                time.sleep(0.5)
+                                st.rerun()
+
+        with st.container(border=True):
+            st.subheader(f"📆 Events & Training ({target_date_str})")
+            st.markdown(f"<ul style='margin-top: 0px;'>{events_html}</ul>", unsafe_allow_html=True)
+
+    with notes_col:
+        with st.container(border=True):
+            st.subheader("📌 Daily Shift Notes / Pass-On")
+            if is_admin:
+                with st.form(f"daily_notes_form_{target_date_str}"):
+                    note_input = st.text_area(
+                        "Shift Notes (printed neatly on the Daily Roster)",
+                        value=current_daily_note,
+                        height=155,
+                        placeholder="Type any shift announcements, pass-on notes, hydrant/airfield notices, or special instructions for this date...",
+                        label_visibility="collapsed"
+                    )
+                    if current_daily_note and current_note_author:
+                        st.caption(f"Last updated by **{current_note_author}** at {current_note_time}")
+                    nc_btn1, nc_btn2 = st.columns([3, 1])
+                    save_note_btn = nc_btn1.form_submit_button("💾 Save Shift Notes", type="primary", use_container_width=True)
+                    clear_note_btn = nc_btn2.form_submit_button("🗑️ Clear", use_container_width=True)
+
+                    if save_note_btn:
+                        cleaned_note = note_input.strip()
+                        conn = get_db_connection()
+                        try:
+                            c = conn.cursor()
+                            now_ts = get_station_timestamp_str()
+                            if cleaned_note:
+                                c.execute(
+                                    """INSERT INTO Daily_Notes (Target_Date, Notes_Text, Updated_By, Updated_At)
+                                       VALUES (%s, %s, %s, %s)
+                                       ON CONFLICT (Target_Date) DO UPDATE SET
+                                           Notes_Text = EXCLUDED.Notes_Text,
+                                           Updated_By = EXCLUDED.Updated_By,
+                                           Updated_At = EXCLUDED.Updated_At""",
+                                    (target_date_str, cleaned_note, current_admin_name, now_ts)
+                                )
+                                log_audit_event(c, "Daily Notes Updated", target_date_str, f"Updated shift notes ({len(cleaned_note)} chars)")
+                            else:
+                                c.execute("DELETE FROM Daily_Notes WHERE Target_Date = %s", (target_date_str,))
+                                log_audit_event(c, "Daily Notes Cleared", target_date_str, "Cleared shift notes")
+                            conn.commit()
+                        finally:
+                            conn.close()
+                        st.success("Shift notes saved!")
+                        time.sleep(0.6)
+                        st.rerun()
+
+                    if clear_note_btn:
+                        conn = get_db_connection()
+                        try:
+                            c = conn.cursor()
+                            c.execute("DELETE FROM Daily_Notes WHERE Target_Date = %s", (target_date_str,))
+                            log_audit_event(c, "Daily Notes Cleared", target_date_str, "Cleared shift notes")
+                            conn.commit()
+                        finally:
+                            conn.close()
+                        st.success("Shift notes cleared!")
+                        time.sleep(0.6)
+                        st.rerun()
+            else:
+                if current_daily_note:
+                    with st.container(border=True):
+                        st.markdown(current_daily_note.replace("\n", "  \n"))
+                        if current_note_author:
+                            st.caption(f"Posted by **{current_note_author}** ({current_note_time})")
+                else:
+                    st.info("No shift notes posted for this date.")
 
     if is_admin:
+        st.divider()
         st.markdown("### 🛠️ Shift Adjustments & Seat Locks")
         if target_date < station_today:
             st.caption("ℹ️ **Historical Shift:** This date has already passed and is automatically committed to Seat Statistics. Any overrides or edits made here automatically update history.")
@@ -2462,7 +2724,6 @@ if selected_page == "📋 Daily Roster":
                     conn = get_db_connection()
                     try:
                         c = conn.cursor()
-                        # Remove conflicting seat lock for the selected period
                         if o_period == "FULL":
                             c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, o_seat))
                         elif o_period == "AM":
@@ -2472,7 +2733,6 @@ if selected_page == "📋 Daily Roster":
                             c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s AND Period = 'PM'", (target_date_str, o_seat))
                             c.execute("UPDATE Manual_Overrides SET Period = 'AM' WHERE Target_Date = %s AND Seat = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, o_seat))
 
-                        # Remove conflicting person lock in the same apparatus category (Primary vs Tanker vs Crash)
                         if o_name != "VACANT":
                             t_rig = o_seat.split(" | ")[0].strip()
                             c.execute("SELECT id, Seat, Period FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
@@ -2531,81 +2791,6 @@ if selected_page == "📋 Daily Roster":
                             finally:
                                 conn.close()
                             st.rerun()
-
-    st.divider()
-    day_of_week = target_date.strftime("%A")
-    
-    with st.container(border=True):
-        det_col, notes_col = st.columns([1.1, 1])
-
-        with det_col:
-            st.subheader(f"🧹 Station Details ({day_of_week})")
-            st.markdown(f"<ul style='margin-top: 0px;'>{station_details_html}</ul>", unsafe_allow_html=True)
-
-        with notes_col:
-            st.subheader("📌 Daily Shift Notes / Pass-On")
-            if is_admin:
-                with st.form(f"daily_notes_form_{target_date_str}"):
-                    note_input = st.text_area(
-                        "Shift Notes (printed neatly on the Daily Roster)",
-                        value=current_daily_note,
-                        height=120,
-                        placeholder="Type any shift announcements, pass-on notes, hydrant/airfield notices, or special instructions for this date...",
-                        label_visibility="collapsed"
-                    )
-                    if current_daily_note and current_note_author:
-                        st.caption(f"Last updated by **{current_note_author}** at {current_note_time}")
-                    nc_btn1, nc_btn2 = st.columns([3, 1])
-                    save_note_btn = nc_btn1.form_submit_button("💾 Save Shift Notes", type="primary", use_container_width=True)
-                    clear_note_btn = nc_btn2.form_submit_button("🗑️ Clear", use_container_width=True)
-
-                    if save_note_btn:
-                        cleaned_note = note_input.strip()
-                        conn = get_db_connection()
-                        try:
-                            c = conn.cursor()
-                            now_ts = get_station_timestamp_str()
-                            if cleaned_note:
-                                c.execute(
-                                    """INSERT INTO Daily_Notes (Target_Date, Notes_Text, Updated_By, Updated_At)
-                                       VALUES (%s, %s, %s, %s)
-                                       ON CONFLICT (Target_Date) DO UPDATE SET
-                                           Notes_Text = EXCLUDED.Notes_Text,
-                                           Updated_By = EXCLUDED.Updated_By,
-                                           Updated_At = EXCLUDED.Updated_At""",
-                                    (target_date_str, cleaned_note, current_admin_name, now_ts)
-                                )
-                                log_audit_event(c, "Daily Notes Updated", target_date_str, f"Updated shift notes ({len(cleaned_note)} chars)")
-                            else:
-                                c.execute("DELETE FROM Daily_Notes WHERE Target_Date = %s", (target_date_str,))
-                                log_audit_event(c, "Daily Notes Cleared", target_date_str, "Cleared shift notes")
-                            conn.commit()
-                        finally:
-                            conn.close()
-                        st.success("Shift notes saved!")
-                        time.sleep(0.6)
-                        st.rerun()
-
-                    if clear_note_btn:
-                        conn = get_db_connection()
-                        try:
-                            c = conn.cursor()
-                            c.execute("DELETE FROM Daily_Notes WHERE Target_Date = %s", (target_date_str,))
-                            log_audit_event(c, "Daily Notes Cleared", target_date_str, "Cleared shift notes")
-                            conn.commit()
-                        finally:
-                            conn.close()
-                        st.success("Shift notes cleared!")
-                        time.sleep(0.6)
-                        st.rerun()
-            else:
-                if current_daily_note:
-                    with st.container(border=True):
-                        st.markdown(current_daily_note.replace("\n", "  \n"))
-                        if current_note_author:
-                            st.caption(f"Posted by **{current_note_author}** ({current_note_time})")
-                else:
-                    st.info("No shift notes posted for this date.")
 
 
 # ==========================================
@@ -2792,6 +2977,150 @@ elif selected_page == "📅 Leave Calendar":
         selected_month = st.selectbox("Month", range(1, 13), index=target_date.month - 1, format_func=lambda x: calendar.month_name[x])
     with cal_col2:
         selected_year = st.selectbox("Year", dynamic_years, index=dynamic_years.index(target_date.year))
+
+    if is_admin:
+        with st.expander("➕ Quick Add on Calendar: Leave, Overtime, or Shift Trade", expanded=False):
+            q_col1, q_col2, q_col3 = st.columns(3)
+
+            with q_col1:
+                st.markdown("##### 🏖️ Enter Leave")
+                with st.form("cal_leave_form", clear_on_submit=True):
+                    cl_date_range = st.date_input("Target Date(s)", value=(target_date, target_date), key="cal_l_dt")
+                    cl_name = st.selectbox("Personnel", all_names, key="cal_l_name")
+                    cl_types = sorted([
+                        "Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave",
+                        "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical",
+                        "Personal Leave", "Disability Leave", "Training"
+                    ])
+                    cl_type = st.selectbox("Leave Type", cl_types, key="cal_l_type")
+                    cl_24h = st.checkbox("Full 24h Shift (0700-0700)", value=True, key="cal_l_24")
+                    ct_c1, ct_c2 = st.columns(2)
+                    cl_start = ct_c1.text_input("Start Time", "0700", key="cal_l_s")
+                    cl_end = ct_c2.text_input("End Time", "0700", key="cal_l_e")
+
+                    if st.form_submit_button("Save Leave", type="primary", use_container_width=True):
+                        if isinstance(cl_date_range, (tuple, list)):
+                            s_dt = cl_date_range[0]
+                            e_dt = cl_date_range[1] if len(cl_date_range) > 1 else cl_date_range[0]
+                        else:
+                            s_dt = e_dt = cl_date_range
+
+                        delta_d = e_dt - s_dt
+                        p_sh = personnel_info.get(cl_name, {}).get('Shift', 'A')
+                        p_sc = personnel_info.get(cl_name, {}).get('Schedule', 'Structural')
+                        dates_to_log = []
+                        anchor = datetime.date(2026, 9, 16)
+                        for i_d in range(delta_d.days + 1):
+                            cur_dt = s_dt + datetime.timedelta(days=i_d)
+                            if p_sc == 'Admin':
+                                if cur_dt.weekday() < 5:
+                                    dates_to_log.append(cur_dt.strftime("%Y-%m-%d"))
+                            else:
+                                s_mod = (cur_dt - anchor).days % 3
+                                day_s = "A" if s_mod == 0 else ("B" if s_mod == 1 else "C")
+                                if p_sh == day_s:
+                                    dates_to_log.append(cur_dt.strftime("%Y-%m-%d"))
+
+                        if not dates_to_log:
+                            st.error("No assigned shift days found in that range for this person.")
+                        else:
+                            if cl_24h:
+                                cl_start, cl_end, cl_hours = "0700", "0700", 24.0
+                            else:
+                                cl_hours = calc_hours(cl_start, cl_end)
+                            conn = get_db_connection()
+                            try:
+                                c = conn.cursor()
+                                inserts = [(d, cl_name, cl_type, cl_start, cl_end, cl_hours) for d in dates_to_log]
+                                c.executemany(
+                                    "INSERT INTO Leave_Ledger (Target_Date, Name, Leave_Type, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s)",
+                                    inserts
+                                )
+                                date_span_str = f"{dates_to_log[0]} to {dates_to_log[-1]}" if len(dates_to_log) > 1 else dates_to_log[0]
+                                log_audit_event(c, "Leave Logged", date_span_str, f"Logged {cl_type} for {cl_name} via Calendar: {len(dates_to_log)} shift(s) ({cl_start}-{cl_end}, {cl_hours}h/shift)")
+                                conn.commit()
+                            finally:
+                                conn.close()
+                            st.success(f"Logged {len(dates_to_log)} shift(s) of leave for {cl_name}.")
+                            time.sleep(0.8)
+                            st.rerun()
+
+            with q_col2:
+                st.markdown("##### 💰 Enter Overtime")
+                with st.form("cal_ot_form", clear_on_submit=True):
+                    co_date = st.date_input("Target Date", value=target_date, key="cal_o_dt")
+                    co_name_dd = st.selectbox("Permanent Personnel", ["-- Select --"] + all_names, key="cal_o_dd")
+                    co_name_wi = st.text_input("OR Write-In Name", placeholder="e.g., A1C Snuffy", key="cal_o_wi")
+                    co_type = st.selectbox("OT Type", ["Voluntary", "Mandatory", "Guard Personnel On-Duty"], key="cal_o_type")
+                    co_24h = st.checkbox("Full 24h Shift (0700-0700)", value=False, key="cal_o_24")
+                    ot_c1, ot_c2 = st.columns(2)
+                    co_start = ot_c1.text_input("Start Time", "1500", key="cal_o_s")
+                    co_end = ot_c2.text_input("End Time", "0700", key="cal_o_e")
+
+                    if st.form_submit_button("Save Overtime", type="primary", use_container_width=True):
+                        final_o_name = co_name_wi.strip() if co_name_wi.strip() != "" else co_name_dd
+                        if final_o_name == "-- Select --":
+                            st.error("Please select a person or write one in!")
+                        else:
+                            if co_24h:
+                                co_start, co_end, co_hours = "0700", "0700", 24.0
+                            else:
+                                co_hours = calc_hours(co_start, co_end)
+                            conn = get_db_connection()
+                            try:
+                                c = conn.cursor()
+                                c.execute(
+                                    "INSERT INTO Overtime_Log (Target_Date, Name, OT_Type, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s)",
+                                    (co_date.strftime("%Y-%m-%d"), final_o_name, co_type, co_start, co_end, co_hours)
+                                )
+                                log_audit_event(c, "Overtime Logged", co_date.strftime("%Y-%m-%d"), f"Logged {co_type} for {final_o_name} via Calendar ({co_start}-{co_end}, {co_hours}h)")
+                                conn.commit()
+                            finally:
+                                conn.close()
+                            st.success(f"Logged OT for {final_o_name}.")
+                            time.sleep(0.8)
+                            st.rerun()
+
+            with q_col3:
+                st.markdown("##### 🔀 Enter Shift Trade")
+                with st.form("cal_trade_form", clear_on_submit=True):
+                    ct_name1 = st.selectbox("Person 1 (Name)", all_names, key="cal_t_n1")
+                    ct_date1 = st.date_input("Person 1 Scheduled Date", value=target_date, key="cal_t_d1")
+                    ct_name2 = st.selectbox("Person 2 (Name)", all_names, key="cal_t_n2")
+                    ct_date2 = st.date_input("Person 2 Scheduled Date", value=target_date, key="cal_t_d2")
+                    ct_24h = st.checkbox("Full 24h Trade (0700-0700)", value=True, key="cal_t_24")
+                    tt_c1, tt_c2 = st.columns(2)
+                    ct_start = tt_c1.text_input("Start Time", "0700", key="cal_t_s")
+                    ct_end = tt_c2.text_input("End Time", "0700", key="cal_t_e")
+
+                    if st.form_submit_button("Save Trade", type="primary", use_container_width=True):
+                        if ct_name1 == ct_name2:
+                            st.error("Personnel cannot trade with themselves!")
+                        else:
+                            if ct_24h:
+                                ct_start, ct_end, ct_hours = "0700", "0700", 24.0
+                            else:
+                                ct_hours = calc_hours(ct_start, ct_end)
+                            conn = get_db_connection()
+                            try:
+                                c = conn.cursor()
+                                c.execute(
+                                    "INSERT INTO Shift_Trades_V3 (Date_1, Name_1, Date_2, Name_2, Start_Time, End_Time, Total_Hours) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                                    (ct_date1.strftime("%Y-%m-%d"), ct_name1, ct_date2.strftime("%Y-%m-%d"), ct_name2, ct_start, ct_end, ct_hours)
+                                )
+                                log_audit_event(
+                                    c,
+                                    "Shift Trade Logged",
+                                    f"{ct_date1.strftime('%Y-%m-%d')} / {ct_date2.strftime('%Y-%m-%d')}",
+                                    f"Trade via Calendar: {ct_name1} ({ct_date1.strftime('%Y-%m-%d')}) <-> {ct_name2} ({ct_date2.strftime('%Y-%m-%d')}) ({ct_start}-{ct_end}, {ct_hours}h)"
+                                )
+                                conn.commit()
+                            finally:
+                                conn.close()
+                            st.success(f"Logged Trade: {ct_name1} and {ct_name2}.")
+                            time.sleep(0.8)
+                            st.rerun()
+
     st.divider()
     cal_matrix = calendar.monthcalendar(selected_year, selected_month)
     days_of_week = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -2808,11 +3137,11 @@ elif selected_page == "📅 Leave Calendar":
                     date_str = current_date.strftime("%Y-%m-%d")
                     cal_shift_mod = (current_date - anchor_date).days % 3
                     if cal_shift_mod == 0:
-                        shift_color, shift_name, day_shift = "#4CAF50", "A-Shift", "A"
+                        shift_color, shift_name, day_shift = "#F44336", "A-Shift", "A"
                     elif cal_shift_mod == 1:
                         shift_color, shift_name, day_shift = "#2196F3", "B-Shift", "B"
                     else:
-                        shift_color, shift_name, day_shift = "#F44336", "C-Shift", "C"
+                        shift_color, shift_name, day_shift = "#4CAF50", "C-Shift", "C"
 
                     day_leave = all_leave_df[all_leave_df['target_date'] == date_str] if not all_leave_df.empty else pd.DataFrame()
                     day_ot = all_ot_df[all_ot_df['target_date'] == date_str] if not all_ot_df.empty else pd.DataFrame()
@@ -2950,11 +3279,11 @@ elif selected_page == "📆 Training & Events":
                         date_str = current_date.strftime("%Y-%m-%d")
                         cal_shift_mod = (current_date - anchor_date).days % 3
                         if cal_shift_mod == 0:
-                            shift_color, shift_name = "#4CAF50", "A-Shift"
+                            shift_color, shift_name = "#F44336", "A-Shift"
                         elif cal_shift_mod == 1:
                             shift_color, shift_name = "#2196F3", "B-Shift"
                         else:
-                            shift_color, shift_name = "#F44336", "C-Shift"
+                            shift_color, shift_name = "#4CAF50", "C-Shift"
 
                         day_events = events_df[events_df['target_date'] == date_str] if not events_df.empty else pd.DataFrame()
 
@@ -3085,7 +3414,7 @@ elif selected_page == "📊 Seat Statistics":
 elif selected_page == "✍️ Data Entry" and is_admin:
     st.subheader("✍️ Data Entry & Roster Management")
 
-    de_tabs = st.tabs(["🏖️ Leave", "💰 Overtime", "🔀 Shift Trades", "🚒 Shift Roster", "⏱️ OT Canvass List", "🚒 Apparatus Status", "💾 Backups"])
+    de_tabs = st.tabs(["🏖️ Leave", "💰 Overtime", "🔀 Shift Trades", "🚒 Shift Roster", "⏱️ OT Canvass List", "🚒 Apparatus Status", "🔔 Recurring Reminders", "💾 Backups"])
 
     # ----------------------------------------
     # TAB 1: ENTER LEAVE
@@ -3687,9 +4016,109 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                         st.rerun()
 
     # ----------------------------------------
-    # TAB 7: DATABASE BACKUPS
+    # TAB 7: RECURRING REMINDERS
     # ----------------------------------------
     with de_tabs[6]:
+        st.markdown("#### 🔔 Recurring Reminders & Scheduled Checks")
+        st.caption("Configure recurring station checks and reminders (e.g., 1st of the month vehicle mileage & engine hours, SCBA airpack inspections, weekly checks). Active reminders automatically appear on the Daily Roster and Printed Roster on their scheduled dates.")
+
+        rem_col1, rem_col2 = st.columns([1, 1.3])
+        with rem_col1:
+            st.markdown("##### ➕ Add New Recurring Reminder")
+            with st.form("add_recurring_reminder_form", clear_on_submit=True):
+                r_title = st.text_input("Reminder / Check Title", placeholder="e.g., Vehicle Mileage & Engine Hours, Check Airpacks...")
+                r_rule = st.selectbox(
+                    "Recurrence Schedule",
+                    [
+                        "Monthly (Day of Month)",
+                        "Monthly on 1st, 2nd & 3rd (All 3 Shifts)",
+                        "Weekly (Day of Week)",
+                        "Monthly (1st Weekday of Month)",
+                        "Every Shift (Daily)"
+                    ]
+                )
+                rc_1, rc_2 = st.columns(2)
+                r_day_val = rc_1.number_input("Day of Month (1–31)", min_value=1, max_value=31, value=1, step=1, help="Used when 'Monthly (Day of Month)' is selected (e.g. 1 = 1st of every month).")
+                r_weekday_val = rc_2.selectbox("Weekday (if Weekly / 1st Weekday)", WEEKDAY_NAMES, index=0)
+
+                r_section = st.selectbox("Where to Display on Daily Roster", ["Station Details", "Events & Training"])
+                r_assigned = st.text_input("Assigned To", value="All On-Duty Crew", placeholder="e.g., All Drivers, All On-Duty Crew, Rescue Crew Chief...")
+
+                if st.form_submit_button("Save Recurring Reminder", type="primary", use_container_width=True):
+                    if not r_title.strip():
+                        st.error("Please enter a title for the recurring reminder.")
+                    else:
+                        conn = get_db_connection()
+                        try:
+                            c = conn.cursor()
+                            c.execute(
+                                """INSERT INTO Recurring_Reminders
+                                   (Title, Rule_Type, Day_Val, Weekday_Val, Display_Section, Assigned_To, Active, Created_By)
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                                (r_title.strip(), r_rule, int(r_day_val), r_weekday_val, r_section, r_assigned.strip() or "All On-Duty Crew", True, current_admin_name)
+                            )
+                            log_audit_event(c, "Recurring Reminder Added", station_today_str, f"Added recurring reminder: '{r_title.strip()}' ({r_rule})")
+                            conn.commit()
+                        finally:
+                            conn.close()
+                        st.success(f"Added recurring reminder: {r_title.strip()}!")
+                        time.sleep(0.8)
+                        st.rerun()
+
+        with rem_col2:
+            st.markdown("##### 📋 Configured Recurring Reminders")
+            if recurring_reminders_df.empty:
+                st.info("No recurring reminders configured yet.")
+            else:
+                for _, rem in recurring_reminders_df.iterrows():
+                    with st.container(border=True):
+                        rc_a, rc_b, rc_c = st.columns([4.2, 1.2, 1])
+                        r_active = bool(rem.get('active', True))
+                        status_badge = "🟢 Active" if r_active else "⚪ Paused"
+                        rtype = str(rem.get('rule_type', ''))
+                        if rtype == "Monthly (Day of Month)":
+                            sched_desc = f"Monthly on Day **{int(rem.get('day_val', 1))}**"
+                        elif rtype == "Monthly on 1st, 2nd & 3rd (All 3 Shifts)":
+                            sched_desc = "Monthly on **Days 1, 2 & 3** (Each Shift)"
+                        elif rtype == "Weekly (Day of Week)":
+                            sched_desc = f"Every **{rem.get('weekday_val', 'Monday')}**"
+                        elif rtype == "Monthly (1st Weekday of Month)":
+                            sched_desc = f"1st **{rem.get('weekday_val', 'Monday')}** of Month"
+                        else:
+                            sched_desc = "Every Shift (Daily)"
+
+                        rc_a.markdown(
+                            f"🔔 **{rem['title']}** &nbsp; `[{status_badge}]`  \n"
+                            f"<span style='font-size:0.88em; color:#555;'>📅 {sched_desc} &nbsp;|&nbsp; 📌 Shows in: <b>{rem.get('display_section', 'Station Details')}</b> &nbsp;|&nbsp; 👤 {rem.get('assigned_to', 'All On-Duty Crew')}</span>",
+                            unsafe_allow_html=True
+                        )
+                        toggle_lbl = "⏸️ Pause" if r_active else "▶️ Enable"
+                        if rc_b.button(toggle_lbl, key=f"tog_rem_{rem['id']}", use_container_width=True):
+                            conn = get_db_connection()
+                            try:
+                                c = conn.cursor()
+                                c.execute("UPDATE Recurring_Reminders SET Active = %s WHERE id = %s", (not r_active, rem['id']))
+                                log_audit_event(c, "Recurring Reminder Updated", station_today_str, f"Toggled '{rem['title']}' to {'Active' if not r_active else 'Paused'}")
+                                conn.commit()
+                            finally:
+                                conn.close()
+                            st.rerun()
+
+                        if rc_c.button("🗑️", key=f"del_rem_{rem['id']}", use_container_width=True):
+                            conn = get_db_connection()
+                            try:
+                                c = conn.cursor()
+                                c.execute("DELETE FROM Recurring_Reminders WHERE id = %s", (rem['id'],))
+                                log_audit_event(c, "Recurring Reminder Deleted", station_today_str, f"Deleted recurring reminder: '{rem['title']}'")
+                                conn.commit()
+                            finally:
+                                conn.close()
+                            st.rerun()
+
+    # ----------------------------------------
+    # TAB 8: DATABASE BACKUPS
+    # ----------------------------------------
+    with de_tabs[7]:
         st.subheader("💾 Database Backups & Disaster Recovery")
         st.markdown("Download a full snapshot of all active tables, or restore the database from a previously downloaded snapshot.")
 
@@ -3716,7 +4145,9 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                         "Apparatus": "SELECT Rig_Name, Status FROM Apparatus",
                         "Admin_Users": "SELECT Admin_Name, Pin_Code, Role, Active, Created_At FROM Admin_Users",
                         "Audit_Log": "SELECT id, Timestamp_ET, Admin_Name, Action_Type, Target_Date, Details FROM Audit_Log",
-                        "Daily_Notes": "SELECT Target_Date, Notes_Text, Updated_By, Updated_At FROM Daily_Notes"
+                        "Daily_Notes": "SELECT Target_Date, Notes_Text, Updated_By, Updated_At FROM Daily_Notes",
+                        "Extra_Station_Details": "SELECT id, Target_Date, Task, Assigned_To, Created_By FROM Extra_Station_Details",
+                        "Recurring_Reminders": "SELECT id, Title, Rule_Type, Day_Val, Weekday_Val, Display_Section, Assigned_To, Active, Created_By FROM Recurring_Reminders"
                     }
 
                     output = io.BytesIO()
@@ -3765,7 +4196,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                                 conn = get_db_connection()
                                 c = conn.cursor()
 
-                                all_possible_sheets = core_sheets + ["Station_Events", "Apparatus", "Admin_Users", "Audit_Log", "Daily_Notes"]
+                                all_possible_sheets = core_sheets + ["Station_Events", "Apparatus", "Admin_Users", "Audit_Log", "Daily_Notes", "Extra_Station_Details", "Recurring_Reminders"]
 
                                 for t in reversed(all_possible_sheets):
                                     if t in excel_file.sheet_names:
