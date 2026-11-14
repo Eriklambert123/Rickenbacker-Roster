@@ -79,9 +79,28 @@ def get_station_timestamp_str():
         return (datetime.datetime.utcnow() - datetime.timedelta(hours=4)).strftime("%Y-%m-%d %H:%M:%S")
 
 
+SEAT_RESTRICTION_OPTIONS = [
+    "None",
+    "Grounded: Backseat Only (E-221 / R-221 FF Seats — Still Drives Crash)",
+    "Grounded: Backseat & ARO Only (No Officer / No Structural Driver)",
+    "No Officer Seats (Driver, Backseat & ARO Allowed)",
+    "No Engine Driver (R-221 Driver, Backseat & ARO Allowed)",
+    "No Rescue Driver (E-221 Driver, Backseat & ARO Allowed)"
+]
+
+SEAT_RESTRICTION_LABELS = {
+    "None": "🟢 Normal Rotation (No Restrictions)",
+    "Grounded: Backseat Only (E-221 / R-221 FF Seats — Still Drives Crash)": "⚠️ Grounded: Backseat Only (E-221 / R-221 FF Seats — Still Drives Crash)",
+    "Grounded: Backseat & ARO Only (No Officer / No Structural Driver)": "⚠️ Grounded: Backseat & ARO Only (No Officer / No Structural Driver)",
+    "No Officer Seats (Driver, Backseat & ARO Allowed)": "🚫 No Officer Seats (Driver, Backseat & ARO Allowed)",
+    "No Engine Driver (R-221 Driver, Backseat & ARO Allowed)": "🚫 No Engine Driver (R-221 Driver, Backseat & ARO Allowed)",
+    "No Rescue Driver (E-221 Driver, Backseat & ARO Allowed)": "🚫 No Rescue Driver (E-221 Driver, Backseat & ARO Allowed)"
+}
+
+
 def get_icon(entry_type):
     icons = {
-        "Annual Leave": "🏖️", "Paternity Leave": "🍼", "Union Leave": "🤝",
+        "Annual Leave": "🏖️", "Sick Leave": "🤒", "Paternity Leave": "🍼", "Union Leave": "🤝",
         "Bereavement Leave": "🕊️", "Medical Leave": "🏥", "Military Leave": "🪖",
         "Jury Duty": "⚖️", "NFPA Physical": "🩺", "Personal Leave": "👤",
         "Disability Leave": "♿", "Training": "📚", "Voluntary": "💰",
@@ -362,7 +381,7 @@ def recalculate_ff_seniority():
 
 
 @st.cache_resource
-def init_db(_schema_v=10):
+def init_db(_schema_v=11):
     conn = get_db_connection()
     try:
         with conn.cursor() as c:
@@ -388,7 +407,9 @@ def init_db(_schema_v=10):
                 EMR BOOLEAN DEFAULT FALSE, EMT BOOLEAN DEFAULT FALSE, Paramedic BOOLEAN DEFAULT FALSE,
                 Hire_Date TEXT DEFAULT '2020-01-01', Tie_Breaker INTEGER DEFAULT 9999,
                 Admin_24h_Day TEXT DEFAULT 'None',
-                Staffs_Trucks BOOLEAN DEFAULT TRUE
+                Staffs_Trucks BOOLEAN DEFAULT TRUE,
+                Seat_Restriction TEXT DEFAULT 'None',
+                Restriction_Note TEXT DEFAULT ''
             )""")
             c.execute("""CREATE TABLE IF NOT EXISTS Leave_Ledger (
                 id SERIAL PRIMARY KEY, Target_Date TEXT, Name TEXT, Leave_Type TEXT,
@@ -474,6 +495,10 @@ def init_db(_schema_v=10):
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Admin_24h_Day TEXT DEFAULT 'None'")
             c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Staffs_Trucks BOOLEAN DEFAULT TRUE")
             c.execute("UPDATE Personnel SET Staffs_Trucks = TRUE WHERE Staffs_Trucks IS NULL")
+            c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Seat_Restriction TEXT DEFAULT 'None'")
+            c.execute("UPDATE Personnel SET Seat_Restriction = 'None' WHERE Seat_Restriction IS NULL OR Seat_Restriction = ''")
+            c.execute("ALTER TABLE Personnel ADD COLUMN IF NOT EXISTS Restriction_Note TEXT DEFAULT ''")
+            c.execute("UPDATE Personnel SET Restriction_Note = '' WHERE Restriction_Note IS NULL")
             c.execute("ALTER TABLE Manual_Overrides ADD COLUMN IF NOT EXISTS Period TEXT DEFAULT 'FULL'")
             c.execute("UPDATE Manual_Overrides SET Period = 'FULL' WHERE Period IS NULL")
 
@@ -673,6 +698,16 @@ try:
     else:
         all_personnel_df['staffs_trucks'] = all_personnel_df['staffs_trucks'].fillna(True).astype(bool)
 
+    if 'seat_restriction' not in all_personnel_df.columns:
+        all_personnel_df['seat_restriction'] = 'None'
+    else:
+        all_personnel_df['seat_restriction'] = all_personnel_df['seat_restriction'].fillna('None').replace('', 'None')
+
+    if 'restriction_note' not in all_personnel_df.columns:
+        all_personnel_df['restriction_note'] = ''
+    else:
+        all_personnel_df['restriction_note'] = all_personnel_df['restriction_note'].fillna('')
+
     all_leave_df = pd.read_sql("SELECT * FROM Leave_Ledger", conn)
     all_leave_df.columns = [c.lower() for c in all_leave_df.columns] if not all_leave_df.empty else ["id", "target_date", "name", "leave_type", "start_time", "end_time", "total_hours"]
 
@@ -770,7 +805,9 @@ for _, r in all_personnel_df.iterrows():
         'EMT': bool(r.get('emt', False)),
         'Paramedic': bool(r.get('paramedic', False)),
         'Admin_24h_Day': r.get('admin_24h_day', 'None'),
-        'Staffs_Trucks': bool(r.get('staffs_trucks', True))
+        'Staffs_Trucks': bool(r.get('staffs_trucks', True)),
+        'Seat_Restriction': str(r.get('seat_restriction', 'None') or 'None').strip(),
+        'Restriction_Note': str(r.get('restriction_note', '') or '').strip()
     }
     if r['schedule'] == 'Admin':
         admin_names.add(r['name'])
@@ -1003,13 +1040,82 @@ def apply_cross_staffing_and_watches(rigs, d_watches, oos_list_local):
     return rigs
 
 
+# --- SEAT RESTRICTION / REMEDIAL GROUNDING HELPERS ---
+def get_person_restriction(name_str):
+    c_name = clean_display_name(name_str)
+    val = str(personnel_info.get(c_name, {}).get('Seat_Restriction', 'None') or 'None').strip()
+    return val if val in SEAT_RESTRICTION_OPTIONS else "None"
+
+
+def can_fill_officer_seat(name_str):
+    """Returns True if the member has no active restriction prohibiting automatic Officer seat assignment."""
+    return get_person_restriction(name_str) == "None"
+
+
+def is_rotating_seat_allowed(name_str, rig, pos):
+    """
+    Evaluates whether `name_str` is permitted to be auto-assigned to `(rig, pos)` among the 6 rotating seats.
+    Grounded members are automatically directed to the backseats of E-221 and R-221 (while still cross-staffing Crash trucks).
+    """
+    rest = get_person_restriction(name_str)
+    if rest in ("None", "No Officer Seats (Driver, Backseat & ARO Allowed)"):
+        return True
+    if rest == "Grounded: Backseat Only (E-221 / R-221 FF Seats — Still Drives Crash)":
+        return (rig == "E-221" and pos in ("Firefighter 1", "Firefighter 2")) or (rig == "R-221" and pos == "Firefighter 1")
+    if rest == "Grounded: Backseat & ARO Only (No Officer / No Structural Driver)":
+        return pos != "Driver/Operator"
+    if rest == "No Engine Driver (R-221 Driver, Backseat & ARO Allowed)":
+        return not (rig == "E-221" and pos == "Driver/Operator")
+    if rest == "No Rescue Driver (E-221 Driver, Backseat & ARO Allowed)":
+        return not (rig == "R-221" and pos == "Driver/Operator")
+    return True
+
+
+def select_feasible_rotation_pool(cand_list, open_rot_seats):
+    """
+    Selects up to `len(open_rot_seats)` candidates from `cand_list` (preserving seniority order),
+    swapping in an unrestricted candidate from the remaining list if too many restricted candidates
+    would otherwise force a Driver/Operator seat violation when extra personnel (>9) are on duty.
+    """
+    n_needed = len(open_rot_seats)
+    if len(cand_list) <= n_needed:
+        pool = cand_list.copy()
+        rem = []
+        return pool, rem
+
+    pool = cand_list[:n_needed]
+    rem = cand_list[n_needed:]
+
+    def has_zero_violation_assignment(sub_pool):
+        for perm in itertools.permutations(sub_pool, len(open_rot_seats)):
+            if all(is_rotating_seat_allowed(perm[i]["Name"], open_rot_seats[i][0], open_rot_seats[i][1]) for i in range(len(open_rot_seats))):
+                return True
+        return False
+
+    if not has_zero_violation_assignment(pool) and rem:
+        for r_idx, r_cand in enumerate(rem):
+            if get_person_restriction(r_cand["Name"]) == "None":
+                for p_idx in range(len(pool) - 1, -1, -1):
+                    if get_person_restriction(pool[p_idx]["Name"]) != "None":
+                        test_pool = pool.copy()
+                        test_pool[p_idx] = r_cand
+                        if has_zero_violation_assignment(test_pool):
+                            swapped_out = pool[p_idx]
+                            pool[p_idx] = r_cand
+                            rem[r_idx] = swapped_out
+                            break
+                if has_zero_violation_assignment(pool):
+                    break
+
+    return pool, rem
+
+
 # --- OPTIMAL ROTATING SEAT BALANCER ---
 def assign_optimal_rotating_seats(candidates_pool, open_seats_list, stats_local):
     """
     Globally assigns firefighters in `candidates_pool` to `open_seats_list` (up to 6 rotating seats)
-    to minimize both individual seat hour deficits and apparatus-level (E-221 vs R-221 vs ARO) hour
-    imbalance. Prevents any firefighter from getting repeatedly stacked on E-221 once their deficit
-    is caught up.
+    to strictly honor any Remedial / Seat Restrictions first, then minimize both individual seat hour
+    deficits and apparatus-level (E-221 vs R-221 vs ARO) hour imbalance.
     """
     if not candidates_pool or not open_seats_list:
         return {}, candidates_pool
@@ -1045,6 +1151,7 @@ def assign_optimal_rotating_seats(candidates_pool, open_seats_list, stats_local)
     best_score = None
 
     for perm in itertools.permutations(active_cands, n_assign):
+        restriction_violations = 0
         admin_in_aro = 0
         rel_seat_cost = 0.0
         raw_seat_cost = 0.0
@@ -1056,26 +1163,27 @@ def assign_optimal_rotating_seats(candidates_pool, open_seats_list, stats_local)
             seat_name = f"{rig} {pos}"
             prof = cand_profiles[person["Name"]]
 
+            if not is_rotating_seat_allowed(prof["clean"], rig, pos):
+                restriction_violations += 1
+
             if rig == "ARO" and prof["is_admin"]:
                 admin_in_aro += 1
 
             h_s = prof["seat_hrs"].get(seat_name, 0.0)
-            # Deviation from firefighter's own average across the 6 rotating seats
             rel_s = h_s - prof["avg_seat"]
-            # Deviation of this apparatus (E-221 vs R-221 vs ARO) from firefighter's average
             rel_r = prof["rig_avg"].get(rig, 0.0) - prof["avg_seat"]
 
-            # Post-shift squared excess above personal baseline + raw seat hours
             rel_seat_cost += ((rel_s + 24.0) ** 2)
             raw_seat_cost += ((h_s + 24.0) ** 2)
             rig_balance_cost += ((rel_r + (24.0 / rig_seat_counts.get(rig, 1.0))) ** 2)
             tie_breaker += prof["sen"] * (idx + 1) * 0.0001
 
         # Combined cost prioritizes:
+        # 0. Zero seat-restriction violations (Remedial / Grounded rules strictly enforced)
         # 1. Keeping Admin out of ARO Float if structural FF is available
         # 2. Equalizing seat hours (both relative to personal average and raw across shift) plus apparatus balance
         combined_metric = round(rel_seat_cost * 1.5 + raw_seat_cost * 1.0 + rig_balance_cost * 0.75, 4)
-        score = (admin_in_aro, combined_metric, round(rig_balance_cost, 4), round(tie_breaker, 6))
+        score = (restriction_violations, admin_in_aro, combined_metric, round(rig_balance_cost, 4), round(tie_breaker, 6))
         if best_score is None or score < best_score:
             best_score = score
             best_perm = perm
@@ -1121,16 +1229,17 @@ def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, p
         else:
             am_r[rig][pos] = locked_name
 
-    # 2. AM Officers
+    # 2. AM Officers (honoring Seat Restrictions / Grounding)
     for rig, pos in officer_seats:
         if am_p and am_r[rig][pos] == "":
             chosen = None
+            eligible_off_am = [p for p in am_p if can_fill_officer_seat(p["Name"])]
             if rig == "CH-222":
-                cands = [p for p in am_p if p['Seniority'] <= 4]
+                cands = [p for p in eligible_off_am if p['Seniority'] <= 4]
                 if cands:
                     chosen = cands[0]
             else:
-                cert_cands = [p for p in am_p if personnel_info.get(clean_display_name(p["Name"]), {}).get('Officer_1', False)]
+                cert_cands = [p for p in eligible_off_am if personnel_info.get(clean_display_name(p["Name"]), {}).get('Officer_1', False)]
                 if rig == "E-221":
                     pref_cands = [p for p in cert_cands if 6 <= p['Seniority'] <= 8]
                     if pref_cands:
@@ -1147,7 +1256,7 @@ def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, p
                         chosen = cert_cands[0]
 
             if not chosen:
-                am_p.sort(key=lambda x: (clean_display_name(x["Name"]) in partial_leaves_list, x["Seniority"]))
+                am_p.sort(key=lambda x: (not can_fill_officer_seat(x["Name"]), clean_display_name(x["Name"]) in partial_leaves_list, x["Seniority"]))
                 if not am_p:
                     break
                 chosen = am_p[0]
@@ -1155,11 +1264,9 @@ def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, p
             am_r[rig][pos] = chosen["Name"]
             am_p.remove(chosen)
 
-    # 3. AM Rotating (Global Minimum-Imbalance Assignment)
+    # 3. AM Rotating (Global Minimum-Imbalance Assignment with Seat Restriction enforcement)
     open_am_rot = [(r, pos) for r, pos in rotating_seats if am_r[r][pos] == ""]
-    rotation_pool = []
-    while am_p and len(rotation_pool) < len(open_am_rot):
-        rotation_pool.append(am_p.pop(0))
+    rotation_pool, am_p = select_feasible_rotation_pool(am_p, open_am_rot)
 
     am_rot_assigned, leftover_am_rot = assign_optimal_rotating_seats(rotation_pool, open_am_rot, stats_local)
     for (rig, pos), chosen_name in am_rot_assigned.items():
@@ -1241,12 +1348,13 @@ def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, p
     for rig, pos in officer_seats:
         if pm_r[rig][pos] == "" and structural_pm_pool:
             chosen = None
+            eligible_off_pm = [p for p in structural_pm_pool if can_fill_officer_seat(p["Name"])]
             if rig == "CH-222":
-                cands = [p for p in structural_pm_pool if p['Seniority'] <= 4]
+                cands = [p for p in eligible_off_pm if p['Seniority'] <= 4]
                 if cands:
                     chosen = cands[0]
             else:
-                cert_cands = [p for p in structural_pm_pool if personnel_info.get(clean_display_name(p["Name"]), {}).get('Officer_1', False)]
+                cert_cands = [p for p in eligible_off_pm if personnel_info.get(clean_display_name(p["Name"]), {}).get('Officer_1', False)]
                 if rig == "E-221":
                     pref_cands = [p for p in cert_cands if 6 <= p['Seniority'] <= 8]
                     if pref_cands:
@@ -1263,7 +1371,7 @@ def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, p
                         chosen = cert_cands[0]
 
             if not chosen:
-                structural_pm_pool.sort(key=lambda x: (clean_display_name(x["Name"]) in partial_leaves_list, x["Seniority"]))
+                structural_pm_pool.sort(key=lambda x: (not can_fill_officer_seat(x["Name"]), clean_display_name(x["Name"]) in partial_leaves_list, x["Seniority"]))
                 if not structural_pm_pool:
                     break
                 chosen = structural_pm_pool[0]
@@ -1272,9 +1380,7 @@ def build_roster_assignment(am_c, pm_c, am_ov_local, pm_ov_local, stats_local, p
             structural_pm_pool.remove(chosen)
 
     open_pm_rot = [(r, pos) for r, pos in rotating_seats if pm_r[r][pos] == ""]
-    pm_rot_pool = []
-    while structural_pm_pool and len(pm_rot_pool) < len(open_pm_rot):
-        pm_rot_pool.append(structural_pm_pool.pop(0))
+    pm_rot_pool, structural_pm_pool = select_feasible_rotation_pool(structural_pm_pool, open_pm_rot)
 
     pm_rot_assigned, leftover_pm_rot = assign_optimal_rotating_seats(pm_rot_pool, open_pm_rot, stats_local)
     for (rig, pos), chosen_name in pm_rot_assigned.items():
@@ -2792,6 +2898,79 @@ if selected_page == "📋 Daily Roster":
                                 conn.close()
                             st.rerun()
 
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("##### ⚠️ Remedial / Seat Restrictions (Grounding)")
+        st.caption("Prevent personnel from automatically filling Officer or Structural Driver positions (e.g., during remedial training or decertification). Grounded members are automatically placed in the backseats of `E-221` and `R-221` while still cross-staffing and driving Crash trucks.")
+
+        rest_col1, rest_col2 = st.columns([1, 1])
+        with rest_col1:
+            with st.form("quick_seat_restriction_form", clear_on_submit=False):
+                # Default list prioritizes on-duty personnel first, then all other personnel
+                rest_candidates = on_duty_dropdown_list + [n for n in all_names if n not in on_duty_dropdown_list]
+                r_person = st.selectbox("Select Firefighter", rest_candidates, key="rest_p_sel")
+                r_level = st.selectbox(
+                    "Seat Assignment Status / Restriction",
+                    options=SEAT_RESTRICTION_OPTIONS,
+                    format_func=lambda x: SEAT_RESTRICTION_LABELS.get(x, x),
+                    index=1,
+                    key="rest_lvl_sel"
+                )
+                r_note = st.text_input(
+                    "Reason / Supervisor Note (Optional)",
+                    placeholder="e.g., Remedial driver training — cleared Crash trucks only",
+                    key="rest_note_in"
+                )
+                if st.form_submit_button("Save Seat Restriction", type="primary", use_container_width=True):
+                    conn = get_db_connection()
+                    try:
+                        c = conn.cursor()
+                        clean_note = r_note.strip() if r_level != "None" else ""
+                        c.execute(
+                            "UPDATE Personnel SET Seat_Restriction = %s, Restriction_Note = %s WHERE Name = %s",
+                            (r_level, clean_note, r_person)
+                        )
+                        action_lbl = "Seat Restriction Cleared" if r_level == "None" else "Seat Restriction Applied"
+                        log_audit_event(
+                            c,
+                            action_lbl,
+                            target_date_str,
+                            f"{r_person}: {r_level}" + (f" (Note: {clean_note})" if clean_note else "")
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    st.success(f"Updated seat status for {r_person}!")
+                    time.sleep(0.8)
+                    st.rerun()
+
+        with rest_col2:
+            restricted_df = all_personnel_df[all_personnel_df['seat_restriction'] != 'None'].sort_values(by=['shift', 'seniority'])
+            if restricted_df.empty:
+                st.info("No personnel currently have active seat restrictions / grounding.")
+            else:
+                for _, rp in restricted_df.iterrows():
+                    with st.container(border=True):
+                        rc1, rc2 = st.columns([4, 1.3])
+                        on_duty_tag = " 🟢 *(On-Duty Today)*" if rp['name'] in on_duty_dropdown_list else f" *({rp['shift']}-Shift)*"
+                        note_line = f"  \n📝 *{rp['restriction_note']}*" if str(rp.get('restriction_note', '') or '').strip() else ""
+                        rc1.markdown(
+                            f"⚠️ **{rp['name']}**{on_duty_tag}  \n"
+                            f"`{rp['seat_restriction']}`{note_line}"
+                        )
+                        if rc2.button("✅ Restore", key=f"clr_rest_{rp['name']}", use_container_width=True, help="Clear restriction and restore to normal rotation"):
+                            conn = get_db_connection()
+                            try:
+                                c = conn.cursor()
+                                c.execute(
+                                    "UPDATE Personnel SET Seat_Restriction = 'None', Restriction_Note = '' WHERE Name = %s",
+                                    (rp['name'],)
+                                )
+                                log_audit_event(c, "Seat Restriction Cleared", target_date_str, f"Restored {rp['name']} to normal rotation")
+                                conn.commit()
+                            finally:
+                                conn.close()
+                            st.rerun()
+
 
 # ==========================================
 # PAGE 2: OVERTIME ROSTER
@@ -2988,7 +3167,7 @@ elif selected_page == "📅 Leave Calendar":
                     cl_date_range = st.date_input("Target Date(s)", value=(target_date, target_date), key="cal_l_dt")
                     cl_name = st.selectbox("Personnel", all_names, key="cal_l_name")
                     cl_types = sorted([
-                        "Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave",
+                        "Annual Leave", "Sick Leave", "Paternity Leave", "Union Leave", "Bereavement Leave",
                         "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical",
                         "Personal Leave", "Disability Leave", "Training"
                     ])
@@ -3427,7 +3606,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 l_date_range = st.date_input("Target Date(s)", value=(target_date, target_date))
                 l_name = st.selectbox("Personnel", all_names)
                 leave_types = sorted([
-                    "Annual Leave", "Paternity Leave", "Union Leave", "Bereavement Leave",
+                    "Annual Leave", "Sick Leave", "Paternity Leave", "Union Leave", "Bereavement Leave",
                     "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical",
                     "Personal Leave", "Disability Leave", "Training"
                 ])
@@ -3588,6 +3767,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
         display_df = all_personnel_df.copy()
         display_cols = [
             'seniority', 'name', 'shift', 'schedule', 'admin_24h_day',
+            'seat_restriction', 'restriction_note',
             'hire_date', 'tie_breaker', 'core_manning', 'staffs_trucks',
             'emr', 'emt', 'paramedic',
             'officer_1', 'officer_2', 'officer_3', 'officer_4',
@@ -3703,6 +3883,13 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 st.markdown("<br>", unsafe_allow_html=True)
                 a_core = st.checkbox("Counts Towards Minimum Manning (Core)", value=False, help="Uncheck this for recruits or non-riding Admin so they do not count towards the 9-person minimum.")
                 a_staffs = st.checkbox("Eligible to Staff Apparatus / Trucks", value=True, help="Uncheck this for personnel (such as the Fire Chief) who are on the roster and can hold an Admin PIN, but never staff apparatus.")
+                a_seat_rest = st.selectbox(
+                    "Seat Restriction / Remedial Grounding",
+                    options=SEAT_RESTRICTION_OPTIONS,
+                    format_func=lambda x: SEAT_RESTRICTION_LABELS.get(x, x),
+                    index=0
+                )
+                a_rest_note = st.text_input("Restriction / Remedial Note (Optional)", placeholder="e.g., Remedial driver training")
 
                 st.markdown("**Certifications**")
                 c1, c2, c3, c4 = st.columns(4)
@@ -3737,15 +3924,17 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                                     Inspector, Inspector_2, Inspector_3,
                                     Instructor, Instructor_2, Instructor_3,
                                     EMR, EMT, Paramedic,
-                                    Hire_Date, Tie_Breaker, Admin_24h_Day, Staffs_Trucks
-                                ) VALUES (%s, 999, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                                    Hire_Date, Tie_Breaker, Admin_24h_Day, Staffs_Trucks,
+                                    Seat_Restriction, Restriction_Note
+                                ) VALUES (%s, 999, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                                 (
                                     a_name.strip(), a_core, a_sched, a_shift,
                                     a_off1, a_off2, a_off3, a_off4,
                                     a_insp, a_insp2, a_insp3,
                                     a_inst, a_inst2, a_inst3,
                                     a_emr, a_emt, a_med,
-                                    a_hire.strftime("%Y-%m-%d"), int(a_tie), a_admin_day, a_staffs
+                                    a_hire.strftime("%Y-%m-%d"), int(a_tie), a_admin_day, a_staffs,
+                                    a_seat_rest, a_rest_note.strip()
                                 )
                             )
                             log_audit_event(c, "Personnel Added", station_today_str, f"Added {a_name.strip()} (Shift: {a_shift}, Sched: {a_sched}, Hire: {a_hire.strftime('%Y-%m-%d')}, Tie: {int(a_tie)})")
@@ -3810,6 +3999,17 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                     st.markdown("<br>", unsafe_allow_html=True)
                     e_core = st.checkbox("Counts Towards Minimum Manning (Core)", value=bool(target_data.get('core_manning', True)))
                     e_staffs = st.checkbox("Eligible to Staff Apparatus / Trucks", value=bool(target_data.get('staffs_trucks', True)), help="Uncheck this for personnel (such as the Fire Chief) who never staff apparatus.")
+                    curr_seat_rest = str(target_data.get('seat_restriction', 'None') or 'None').strip()
+                    if curr_seat_rest not in SEAT_RESTRICTION_OPTIONS:
+                        curr_seat_rest = "None"
+                    curr_rest_note = str(target_data.get('restriction_note', '') or '').strip()
+                    e_seat_rest = st.selectbox(
+                        "Seat Restriction / Remedial Grounding",
+                        options=SEAT_RESTRICTION_OPTIONS,
+                        format_func=lambda x: SEAT_RESTRICTION_LABELS.get(x, x),
+                        index=SEAT_RESTRICTION_OPTIONS.index(curr_seat_rest)
+                    )
+                    e_rest_note = st.text_input("Restriction / Remedial Note (Optional)", value=curr_rest_note, placeholder="e.g., Remedial driver training")
 
                     st.markdown("**Certifications**")
                     c1, c2, c3, c4 = st.columns(4)
@@ -3844,7 +4044,8 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                                     Inspector=%s, Inspector_2=%s, Inspector_3=%s,
                                     Instructor=%s, Instructor_2=%s, Instructor_3=%s,
                                     EMR=%s, EMT=%s, Paramedic=%s,
-                                    Admin_24h_Day=%s, Staffs_Trucks=%s
+                                    Admin_24h_Day=%s, Staffs_Trucks=%s,
+                                    Seat_Restriction=%s, Restriction_Note=%s
                                 WHERE Name=%s""",
                                 (
                                     e_sen, e_shift, e_sched, e_core,
@@ -3853,7 +4054,9 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                                     e_insp, e_insp2, e_insp3,
                                     e_inst, e_inst2, e_inst3,
                                     e_emr, e_emt, e_med,
-                                    e_admin_day, e_staffs, edit_target
+                                    e_admin_day, e_staffs,
+                                    e_seat_rest, e_rest_note.strip() if e_seat_rest != "None" else "",
+                                    edit_target
                                 )
                             )
                             log_audit_event(c, "Personnel Updated", station_today_str, f"Updated {edit_target} (Sen: {e_sen}, Shift: {e_shift}, Sched: {e_sched}, Hire: {e_hire.strftime('%Y-%m-%d')}, Tie: {int(e_tie)})")
@@ -4132,7 +4335,7 @@ elif selected_page == "✍️ Data Entry" and is_admin:
                 conn = get_db_connection()
                 try:
                     table_queries = {
-                        "Personnel": "SELECT name, seniority, core_manning, staffs_trucks, schedule, shift, emr, emt, paramedic, officer_1, officer_2, officer_3, officer_4, inspector, inspector_2, inspector_3, instructor, instructor_2, instructor_3, hire_date, tie_breaker, admin_24h_day FROM Personnel",
+                        "Personnel": "SELECT name, seniority, core_manning, staffs_trucks, seat_restriction, restriction_note, schedule, shift, emr, emt, paramedic, officer_1, officer_2, officer_3, officer_4, inspector, inspector_2, inspector_3, instructor, instructor_2, instructor_3, hire_date, tie_breaker, admin_24h_day FROM Personnel",
                         "Overtime_Buckets": "SELECT name, seniority, shift, current_hours, contact FROM Overtime_Buckets",
                         "Leave_Ledger": "SELECT id, target_date, name, leave_type, start_time, end_time, total_hours FROM Leave_Ledger",
                         "Overtime_Log": "SELECT id, target_date, name, ot_type, start_time, end_time, total_hours FROM Overtime_Log",
