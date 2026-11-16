@@ -1521,35 +1521,11 @@ while len(am_crew) < 9 and len(admin_am) > 0:
 while len(pm_crew) < 9 and len(admin_pm) > 0:
     pm_crew.append(admin_pm.pop(0))
 
-# Also include any Admin personnel (e.g., Garver, McNamara) who were manually locked into a seat or manually added to today's crew even when manning >= 9
-forced_am_names = {clean_display_name(v) for v in seat_to_override_am.values() if v and v != "VACANT"}
-forced_pm_names = {clean_display_name(v) for v in seat_to_override_pm.values() if v and v != "VACANT"}
-
-existing_am_clean = {clean_display_name(p["Name"]) for p in am_crew}
-for f_name in forced_am_names:
-    if f_name not in existing_am_clean and f_name in personnel_info:
-        am_crew.append({"Name": f_name, "Seniority": personnel_info[f_name].get("Seniority", 50)})
-        existing_am_clean.add(f_name)
-
-existing_pm_clean = {clean_display_name(p["Name"]) for p in pm_crew}
-for f_name in forced_pm_names:
-    if f_name not in existing_pm_clean and f_name in personnel_info:
-        pm_crew.append({"Name": f_name, "Seniority": personnel_info[f_name].get("Seniority", 50)})
-        existing_pm_clean.add(f_name)
-
 am_crew.sort(key=lambda x: x["Seniority"])
 pm_crew.sort(key=lambda x: x["Seniority"])
 
-truck_eligible_admins = {
-    n for n, meta in personnel_info.items()
-    if meta.get("Schedule") == "Admin" and meta.get("Staffs_Trucks", True)
-}
 all_on_duty = set([p["Name"] for p in am_crew] + [p["Name"] for p in pm_crew])
-on_duty_dropdown_list = sorted(
-    list(
-        set([clean_display_name(n) for n in all_on_duty if n != "VACANT"]).union(truck_eligible_admins)
-    )
-)
+on_duty_dropdown_list = sorted(list(set([clean_display_name(n) for n in all_on_duty if n != "VACANT"])))
 
 def get_transition_time_for_date_sim(am_full, pm_full, date_str_local, ot_df_local, trades_df_local, leave_df_local):
     am_n = clean_display_name(am_full) if am_full else ""
@@ -1726,21 +1702,6 @@ def simulate_single_date_roster(sim_dt, running_stats):
         s_am_c.append(s_admin_am.pop(0))
     while len(s_pm_c) < 9 and len(s_admin_pm) > 0:
         s_pm_c.append(s_admin_pm.pop(0))
-
-    s_forced_am = {clean_display_name(v) for v in sim_ov_am.values() if v and v != "VACANT"}
-    s_forced_pm = {clean_display_name(v) for v in sim_ov_pm.values() if v and v != "VACANT"}
-
-    s_ex_am_clean = {clean_display_name(p["Name"]) for p in s_am_c}
-    for f_name in s_forced_am:
-        if f_name not in s_ex_am_clean and f_name in personnel_info:
-            s_am_c.append({"Name": f_name, "Seniority": personnel_info[f_name].get("Seniority", 50)})
-            s_ex_am_clean.add(f_name)
-
-    s_ex_pm_clean = {clean_display_name(p["Name"]) for p in s_pm_c}
-    for f_name in s_forced_pm:
-        if f_name not in s_ex_pm_clean and f_name in personnel_info:
-            s_pm_c.append({"Name": f_name, "Seniority": personnel_info[f_name].get("Seniority", 50)})
-            s_ex_pm_clean.add(f_name)
 
     s_am_c.sort(key=lambda x: x["Seniority"])
     s_pm_c.sort(key=lambda x: x["Seniority"])
@@ -2306,7 +2267,7 @@ if current_daily_note:
         .replace(">", "&gt;")
         .replace("\n", "<br>")
     )
-    print_notes_block_html = f"<div class='details notes-col'><h3>📌 Daily Shift Notes / Pass-On</h3><div class='notes-content'>{safe_note_html}</div></div>"
+    print_notes_block_html = f"<div class='notes-box'><h3>📌 Daily Shift Notes / Pass-On</h3><div class='notes-content'>{safe_note_html}</div></div>"
 else:
     print_notes_block_html = ""
 
@@ -2415,44 +2376,24 @@ if selected_page == "📋 Daily Roster":
 
     print_html = f"""
     <html><head><style>
-        @media print {{
-            @page {{ size: landscape; margin: 0.22in 0.28in; }}
-            html, body {{
-                print-color-adjust: exact;
-                -webkit-print-color-adjust: exact;
-                max-height: 100%;
-            }}
-        }}
-        body {{ font-family: Arial, sans-serif; font-size: 11.5px; margin: 0; padding: 0; color: #000; }}
-        h2 {{ text-align: center; margin-bottom: 4px; margin-top: 0; font-size: 18px; color: #000; }}
-        h3 {{ margin-top: 0; margin-bottom: 3px; border-bottom: 1.5px solid #000; padding-bottom: 2px; font-size: 13px; color: #000; }}
-        .summary {{ display: flex; justify-content: space-around; flex-wrap: wrap; gap: 6px; margin-bottom: 7px; font-weight: bold; font-size: 12px; background: #e0e0e0; padding: 5px 8px; border-radius: 4px; border: 1px solid #000; }}
-        .trucks {{ display: flex; justify-content: space-between; gap: 8px; margin-bottom: 7px; }}
+        @media print {{ @page {{ size: landscape; margin: 0.4in; }} body {{ print-color-adjust: exact; -webkit-print-color-adjust: exact; }} }}
+        body {{ font-family: Arial, sans-serif; font-size: 13px; margin: 0; padding: 0; color: #000; }}
+        h2 {{ text-align: center; margin-bottom: 5px; margin-top: 0; font-size: 22px; color: #000; }}
+        h3 {{ margin-bottom: 5px; border-bottom: 2px solid #000; padding-bottom: 3px; font-size: 16px; color: #000; }}
+        .summary {{ display: flex; justify-content: space-around; margin-bottom: 15px; font-weight: bold; font-size: 14px; background: #e0e0e0; padding: 8px; border-radius: 4px; border: 1px solid #000; }}
+        .trucks {{ display: flex; justify-content: space-between; gap: 10px; margin-bottom: 15px; }}
         .col {{ width: 33%; }}
-        .box {{ border: 1px solid #000; padding: 4px 6px; border-radius: 4px; margin-bottom: 5px; page-break-inside: avoid; background: #fff; }}
-        .box h4 {{ margin: 0 0 3px 0; color: #000; font-size: 13.5px; border-bottom: 1px solid #ccc; padding-bottom: 1px; }}
-        .seat {{ display: flex; justify-content: space-between; margin-bottom: 2px; font-size: 11px; line-height: 1.18; }}
-        .bottom-section {{ display: flex; gap: 8px; page-break-inside: avoid; align-items: stretch; }}
-        .details {{ flex: 1.15; border: 1px solid #000; padding: 5px 7px; border-radius: 4px; background: #fff; font-size: 10.8px; line-height: 1.22; }}
-        .events-col {{ flex: 0.9; }}
-        .notes-col {{ flex: 0.95; }}
-        .notes-content {{ font-size: 11px; line-height: 1.25; margin-top: 2px; white-space: normal; }}
-        ul {{ margin-top: 2px; padding-left: 16px; margin-bottom: 0; }}
-        li {{ margin-bottom: 2px; }}
-    </style>
-    <script>
-        function fitAndPrint() {{
-            var maxPageHeight = 735;
-            var actualHeight = document.body.scrollHeight;
-            if (actualHeight > maxPageHeight) {{
-                var scaleFactor = Math.max(0.74, maxPageHeight / actualHeight);
-                document.body.style.zoom = scaleFactor;
-            }}
-            window.print();
-        }}
-    </script>
-    </head>
-    <body onload="fitAndPrint()">
+        .box {{ border: 1px solid #000; padding: 6px; border-radius: 4px; margin-bottom: 8px; page-break-inside: avoid; background: #fff; }}
+        .box h4 {{ margin: 0 0 6px 0; color: #000; font-size: 15px; border-bottom: 1px solid #ccc; padding-bottom: 2px; }}
+        .seat {{ display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 12px; }}
+        .bottom-section {{ display: flex; gap: 12px; page-break-inside: avoid; margin-bottom: 10px; }}
+        .details {{ flex: 1; border: 1px solid #000; padding: 8px; border-radius: 4px; background: #fff; }}
+        .notes-box {{ border: 1px solid #000; padding: 8px 10px; border-radius: 4px; page-break-inside: avoid; background: #fff; margin-top: 2px; }}
+        .notes-content {{ font-size: 12.5px; line-height: 1.4; margin-top: 4px; white-space: normal; }}
+        ul {{ margin-top: 5px; padding-left: 20px; margin-bottom: 0; }}
+        li {{ margin-bottom: 3px; }}
+    </style></head>
+    <body onload="window.print()">
         <h2>Rickenbacker Fire Dept Daily Roster - {target_date_str} ({selected_shift})</h2>
         <div class="summary">
             <div>Total On-Duty: {manning_disp}</div>
@@ -2468,9 +2409,9 @@ if selected_page == "📋 Daily Roster":
         </div>
         <div class="bottom-section">
             <div class="details"><h3>🧹 Station Details</h3><ul>{station_details_html}</ul></div>
-            <div class="details events-col"><h3>📆 Events & Training</h3><ul>{events_html}</ul></div>
-            {print_notes_block_html}
+            <div class="details"><h3>📆 Events & Training</h3><ul>{events_html}</ul></div>
         </div>
+        {print_notes_block_html}
     </body></html>
     """
 
@@ -2571,8 +2512,6 @@ if selected_page == "📋 Daily Roster":
                                     cur.execute("SELECT id, Seat, Period FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, p_name))
                                     existing_rows = cur.fetchall()
                                     for ex_id, ex_seat, ex_per in existing_rows:
-                                        if str(ex_seat).startswith("ADMIN_CREW"):
-                                            continue
                                         ex_rig = str(ex_seat).split(" | ")[0].strip()
                                         same_group = (
                                             (t_rig in PRIMARY_RIGS and ex_rig in PRIMARY_RIGS)
@@ -2869,14 +2808,12 @@ if selected_page == "📋 Daily Roster":
             st.rerun()
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("##### 🔧 Quick Manual Overrides & Admin Crew Addition (Garver / McNamara)")
-        st.caption("Lock any personnel (including Capt. Garver & AC McNamara even when manning is ≥ 9) into a specific seat, or select **➕ Add to Active Shift Crew (Auto-Assign Seat)** to add Garver or McNamara to the shift rotation.")
+        st.markdown("##### 🔧 Quick Manual Overrides")
         ov_col1, ov_col2 = st.columns([1, 1])
         with ov_col1:
             with st.form("override_form", clear_on_submit=True):
                 o_name = st.selectbox("Personnel", ["VACANT"] + on_duty_dropdown_list, key="ov_n")
-                seat_override_options = ["➕ Add to Active Shift Crew (Auto-Assign Seat)"] + all_seats_list
-                o_seat = st.selectbox("Assign to Seat (or Auto-Assign)", seat_override_options, index=1, key="ov_s")
+                o_seat = st.selectbox("Assign to Seat", all_seats_list, key="ov_s")
                 period_labels = {
                     "FULL": "Full Shift (0700-0700)",
                     "AM": "Partial: 0700-1500 (AM Only)",
@@ -2889,70 +2826,56 @@ if selected_page == "📋 Daily Roster":
                     key="ov_p"
                 )
 
-                if st.form_submit_button("Save Override / Add to Crew", type="primary"):
-                    if o_seat == "➕ Add to Active Shift Crew (Auto-Assign Seat)" and o_name == "VACANT":
-                        st.error("Please select a person to add to the active shift crew.")
-                    else:
-                        conn = get_db_connection()
-                        try:
-                            c = conn.cursor()
-                            if o_seat == "➕ Add to Active Shift Crew (Auto-Assign Seat)":
-                                admin_crew_seat = f"ADMIN_CREW | {o_name}"
-                                c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, admin_crew_seat))
-                                c.execute(
-                                    "INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, %s)",
-                                    (target_date_str, o_name, admin_crew_seat, o_period)
+                if st.form_submit_button("Lock Seat Override", type="primary"):
+                    conn = get_db_connection()
+                    try:
+                        c = conn.cursor()
+                        if o_period == "FULL":
+                            c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, o_seat))
+                        elif o_period == "AM":
+                            c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s AND Period = 'AM'", (target_date_str, o_seat))
+                            c.execute("UPDATE Manual_Overrides SET Period = 'PM' WHERE Target_Date = %s AND Seat = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, o_seat))
+                        elif o_period == "PM":
+                            c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s AND Period = 'PM'", (target_date_str, o_seat))
+                            c.execute("UPDATE Manual_Overrides SET Period = 'AM' WHERE Target_Date = %s AND Seat = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, o_seat))
+
+                        if o_name != "VACANT":
+                            t_rig = o_seat.split(" | ")[0].strip()
+                            c.execute("SELECT id, Seat, Period FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
+                            for ex_id, ex_seat, ex_per in c.fetchall():
+                                ex_rig = str(ex_seat).split(" | ")[0].strip()
+                                same_group = (
+                                    (t_rig in PRIMARY_RIGS and ex_rig in PRIMARY_RIGS)
+                                    or (t_rig == "Tanker" and ex_rig == "Tanker")
+                                    or (t_rig not in PRIMARY_RIGS and t_rig != "Tanker" and ex_rig not in PRIMARY_RIGS and ex_rig != "Tanker")
                                 )
-                                log_audit_event(c, "Admin Added to Crew", target_date_str, f"Manually added {o_name} to active shift crew ({period_labels[o_period]})")
-                            else:
+                                if not same_group:
+                                    continue
+                                ex_p = str(ex_per or "FULL").upper()
                                 if o_period == "FULL":
-                                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s", (target_date_str, o_seat))
+                                    c.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ex_id,))
                                 elif o_period == "AM":
-                                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s AND Period = 'AM'", (target_date_str, o_seat))
-                                    c.execute("UPDATE Manual_Overrides SET Period = 'PM' WHERE Target_Date = %s AND Seat = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, o_seat))
+                                    if ex_p == "AM":
+                                        c.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ex_id,))
+                                    elif ex_p == "FULL":
+                                        c.execute("UPDATE Manual_Overrides SET Period = 'PM' WHERE id = %s", (ex_id,))
                                 elif o_period == "PM":
-                                    c.execute("DELETE FROM Manual_Overrides WHERE Target_Date = %s AND Seat = %s AND Period = 'PM'", (target_date_str, o_seat))
-                                    c.execute("UPDATE Manual_Overrides SET Period = 'AM' WHERE Target_Date = %s AND Seat = %s AND (Period = 'FULL' OR Period IS NULL)", (target_date_str, o_seat))
+                                    if ex_p == "PM":
+                                        c.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ex_id,))
+                                    elif ex_p == "FULL":
+                                        c.execute("UPDATE Manual_Overrides SET Period = 'AM' WHERE id = %s", (ex_id,))
 
-                                if o_name != "VACANT":
-                                    t_rig = o_seat.split(" | ")[0].strip()
-                                    c.execute("SELECT id, Seat, Period FROM Manual_Overrides WHERE Target_Date = %s AND Name = %s", (target_date_str, o_name))
-                                    for ex_id, ex_seat, ex_per in c.fetchall():
-                                        if str(ex_seat).startswith("ADMIN_CREW"):
-                                            continue
-                                        ex_rig = str(ex_seat).split(" | ")[0].strip()
-                                        same_group = (
-                                            (t_rig in PRIMARY_RIGS and ex_rig in PRIMARY_RIGS)
-                                            or (t_rig == "Tanker" and ex_rig == "Tanker")
-                                            or (t_rig not in PRIMARY_RIGS and t_rig != "Tanker" and ex_rig not in PRIMARY_RIGS and ex_rig != "Tanker")
-                                        )
-                                        if not same_group:
-                                            continue
-                                        ex_p = str(ex_per or "FULL").upper()
-                                        if o_period == "FULL":
-                                            c.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ex_id,))
-                                        elif o_period == "AM":
-                                            if ex_p == "AM":
-                                                c.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ex_id,))
-                                            elif ex_p == "FULL":
-                                                c.execute("UPDATE Manual_Overrides SET Period = 'PM' WHERE id = %s", (ex_id,))
-                                        elif o_period == "PM":
-                                            if ex_p == "PM":
-                                                c.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ex_id,))
-                                            elif ex_p == "FULL":
-                                                c.execute("UPDATE Manual_Overrides SET Period = 'AM' WHERE id = %s", (ex_id,))
-
-                                c.execute(
-                                    "INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, %s)",
-                                    (target_date_str, o_name, o_seat, o_period)
-                                )
-                                log_audit_event(c, "Seat Lock Added", target_date_str, f"Locked {o_name} into {o_seat} ({period_labels[o_period]})")
-                            conn.commit()
-                        finally:
-                            conn.close()
-                        st.success(f"Saved override for {o_name} ({period_labels[o_period]}).")
-                        time.sleep(0.8)
-                        st.rerun()
+                        c.execute(
+                            "INSERT INTO Manual_Overrides (Target_Date, Name, Seat, Period) VALUES (%s, %s, %s, %s)",
+                            (target_date_str, o_name, o_seat, o_period)
+                        )
+                        log_audit_event(c, "Seat Lock Added", target_date_str, f"Locked {o_name} into {o_seat} ({period_labels[o_period]})")
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    st.success(f"Locked {o_name} into {o_seat} ({period_labels[o_period]}).")
+                    time.sleep(1)
+                    st.rerun()
 
         with ov_col2:
             if overrides_df.empty:
@@ -2963,14 +2886,13 @@ if selected_page == "📋 Daily Roster":
                         cols = st.columns([4, 1])
                         per_tag = str(ov.get('period') or 'FULL').upper()
                         per_badge = "Full Shift" if per_tag == "FULL" else ("0700-1500 (AM)" if per_tag == "AM" else "1500-0700 (PM)")
-                        seat_disp = "Added to Active Shift Crew (Auto-Seat)" if str(ov['seat']).startswith("ADMIN_CREW") else ov['seat']
-                        cols[0].markdown(f"**{ov['name']}** ➡️ {seat_disp} &nbsp; `[{per_badge}]`")
+                        cols[0].markdown(f"**{ov['name']}** ➡️ {ov['seat']} &nbsp; `[{per_badge}]`")
                         if cols[1].button("🗑", key=f"del_ov_{ov['id']}", use_container_width=True):
                             conn = get_db_connection()
                             try:
                                 c = conn.cursor()
                                 c.execute("DELETE FROM Manual_Overrides WHERE id = %s", (ov['id'],))
-                                log_audit_event(c, "Seat Lock Removed", target_date_str, f"Removed lock: {ov['name']} -> {seat_disp} ({per_badge})")
+                                log_audit_event(c, "Seat Lock Removed", target_date_str, f"Removed lock: {ov['name']} -> {ov['seat']} ({per_badge})")
                                 conn.commit()
                             finally:
                                 conn.close()
@@ -3441,49 +3363,14 @@ elif selected_page == "📅 Leave Calendar":
                             unsafe_allow_html=True
                         )
 
-                        cal_leave_type_opts = sorted([
-                            "Annual Leave", "Sick Leave", "Paternity Leave", "Union Leave", "Bereavement Leave",
-                            "Medical Leave", "Military Leave", "Jury Duty", "NFPA Physical",
-                            "Personal Leave", "Disability Leave", "Training"
-                        ])
-                        cal_ot_type_opts = ["Voluntary", "Mandatory", "Guard Personnel On-Duty"]
-
                         if not day_leave.empty:
                             for _, l in day_leave.iterrows():
                                 hrs = int(l['total_hours']) if l['total_hours'] % 1 == 0 else l['total_hours']
                                 with st.popover(f"{get_icon(l['leave_type'])} {l['name']} ({hrs}h)", use_container_width=True):
-                                    st.markdown(f"**{l['leave_type']}** ({l['start_time']} - {l['end_time']})")
+                                    st.markdown(f"**{l['leave_type']}**")
+                                    st.write(f"⏱️ {l['start_time']} - {l['end_time']}")
                                     if is_admin:
-                                        with st.form(f"edit_leave_cal_form_{l['id']}"):
-                                            l_p_opts = all_names if l['name'] in all_names else [l['name']] + all_names
-                                            ed_l_name = st.selectbox("Personnel", l_p_opts, index=l_p_opts.index(l['name']), key=f"ed_ln_{l['id']}")
-                                            ed_l_dt = st.date_input("Date", value=current_date, key=f"ed_ld_{l['id']}")
-                                            l_t_opts = cal_leave_type_opts if l['leave_type'] in cal_leave_type_opts else [l['leave_type']] + cal_leave_type_opts
-                                            ed_l_type = st.selectbox("Leave Type", l_t_opts, index=l_t_opts.index(l['leave_type']), key=f"ed_lt_{l['id']}")
-                                            ed_l_24 = st.checkbox("Full 24h (0700-0700)", value=(float(l['total_hours']) >= 24.0), key=f"ed_l24_{l['id']}")
-                                            el_c1, el_c2 = st.columns(2)
-                                            ed_l_s = el_c1.text_input("Start", value=str(l['start_time']), key=f"ed_ls_{l['id']}")
-                                            ed_l_e = el_c2.text_input("End", value=str(l['end_time']), key=f"ed_le_{l['id']}")
-                                            if st.form_submit_button("💾 Save Changes", type="primary", use_container_width=True):
-                                                if ed_l_24:
-                                                    new_s, new_e, new_h = "0700", "0700", 24.0
-                                                else:
-                                                    new_s, new_e = ed_l_s.strip(), ed_l_e.strip()
-                                                    new_h = calc_hours(new_s, new_e)
-                                                new_d_str = ed_l_dt.strftime("%Y-%m-%d")
-                                                conn = get_db_connection()
-                                                try:
-                                                    c = conn.cursor()
-                                                    c.execute(
-                                                        "UPDATE Leave_Ledger SET Target_Date=%s, Name=%s, Leave_Type=%s, Start_Time=%s, End_Time=%s, Total_Hours=%s WHERE id=%s",
-                                                        (new_d_str, ed_l_name, ed_l_type, new_s, new_e, new_h, l['id'])
-                                                    )
-                                                    log_audit_event(c, "Leave Edited", new_d_str, f"Edited leave for {ed_l_name}: {ed_l_type} ({new_s}-{new_e}, {new_h}h)")
-                                                    conn.commit()
-                                                finally:
-                                                    conn.close()
-                                                st.rerun()
-                                        if st.button("🗑️ Cancel Leave", key=f"del_leave_{l['id']}", use_container_width=True):
+                                        if st.button("🗑️ Cancel Leave", key=f"del_leave_{l['id']}", type="primary", use_container_width=True):
                                             conn = get_db_connection()
                                             try:
                                                 c = conn.cursor()
@@ -3501,38 +3388,10 @@ elif selected_page == "📅 Leave Calendar":
                             for _, o in day_ot.iterrows():
                                 hrs = int(o['total_hours']) if o['total_hours'] % 1 == 0 else o['total_hours']
                                 with st.popover(f"{get_icon(o['ot_type'])} {o['name']} ({hrs}h)", use_container_width=True):
-                                    st.markdown(f"**{o['ot_type']}** ({o['start_time']} - {o['end_time']})")
+                                    st.markdown(f"**{o['ot_type']}**")
+                                    st.write(f"⏱️ {o['start_time']} - {o['end_time']}")
                                     if is_admin:
-                                        with st.form(f"edit_ot_cal_form_{o['id']}"):
-                                            o_p_opts = all_names if o['name'] in all_names else [o['name']] + all_names
-                                            ed_o_name = st.selectbox("Personnel", o_p_opts, index=o_p_opts.index(o['name']), key=f"ed_on_{o['id']}")
-                                            ed_o_dt = st.date_input("Date", value=current_date, key=f"ed_od_{o['id']}")
-                                            o_t_opts = cal_ot_type_opts if o['ot_type'] in cal_ot_type_opts else [o['ot_type']] + cal_ot_type_opts
-                                            ed_o_type = st.selectbox("OT Type", o_t_opts, index=o_t_opts.index(o['ot_type']), key=f"ed_ot_{o['id']}")
-                                            ed_o_24 = st.checkbox("Full 24h (0700-0700)", value=(float(o['total_hours']) >= 24.0), key=f"ed_o24_{o['id']}")
-                                            eo_c1, eo_c2 = st.columns(2)
-                                            ed_o_s = eo_c1.text_input("Start", value=str(o['start_time']), key=f"ed_os_{o['id']}")
-                                            ed_o_e = eo_c2.text_input("End", value=str(o['end_time']), key=f"ed_oe_{o['id']}")
-                                            if st.form_submit_button("💾 Save Changes", type="primary", use_container_width=True):
-                                                if ed_o_24:
-                                                    new_s, new_e, new_h = "0700", "0700", 24.0
-                                                else:
-                                                    new_s, new_e = ed_o_s.strip(), ed_o_e.strip()
-                                                    new_h = calc_hours(new_s, new_e)
-                                                new_d_str = ed_o_dt.strftime("%Y-%m-%d")
-                                                conn = get_db_connection()
-                                                try:
-                                                    c = conn.cursor()
-                                                    c.execute(
-                                                        "UPDATE Overtime_Log SET Target_Date=%s, Name=%s, OT_Type=%s, Start_Time=%s, End_Time=%s, Total_Hours=%s WHERE id=%s",
-                                                        (new_d_str, ed_o_name, ed_o_type, new_s, new_e, new_h, o['id'])
-                                                    )
-                                                    log_audit_event(c, "Overtime Edited", new_d_str, f"Edited OT for {ed_o_name}: {ed_o_type} ({new_s}-{new_e}, {new_h}h)")
-                                                    conn.commit()
-                                                finally:
-                                                    conn.close()
-                                                st.rerun()
-                                        if st.button("🗑️ Cancel OT", key=f"del_ot_{o['id']}", use_container_width=True):
+                                        if st.button("🗑️ Cancel OT", key=f"del_ot_{o['id']}", type="primary", use_container_width=True):
                                             conn = get_db_connection()
                                             try:
                                                 c = conn.cursor()
@@ -3547,51 +3406,10 @@ elif selected_page == "📅 Leave Calendar":
                             hrs = int(t['Total_Hours']) if t['Total_Hours'] % 1 == 0 else t['Total_Hours']
                             time_str = f"{t['Start_Time']} - {t['End_Time']}" if hrs < 24 else "0700 - 0700"
                             with st.popover(f"🔀 {t['Off_Name']} 🔁 {t['Work_Name']} ({hrs}h)", use_container_width=True):
-                                st.markdown(f"**Shift Trade** ({time_str})")
+                                st.markdown("**Shift Trade**")
+                                st.write(f"⏱️ {time_str}")
                                 if is_admin:
-                                    orig_trade_rows = all_trades_df[all_trades_df['id'] == t['id']]
-                                    if not orig_trade_rows.empty:
-                                        tr_row = orig_trade_rows.iloc[0]
-                                        try:
-                                            tr_d1 = datetime.datetime.strptime(str(tr_row['date_1']), "%Y-%m-%d").date()
-                                        except Exception:
-                                            tr_d1 = current_date
-                                        try:
-                                            tr_d2 = datetime.datetime.strptime(str(tr_row['date_2']), "%Y-%m-%d").date()
-                                        except Exception:
-                                            tr_d2 = current_date
-                                        with st.form(f"edit_trade_cal_form_{t['id']}_{date_str}"):
-                                            t_p1_opts = all_names if tr_row['name_1'] in all_names else [tr_row['name_1']] + all_names
-                                            t_p2_opts = all_names if tr_row['name_2'] in all_names else [tr_row['name_2']] + all_names
-                                            ed_t_n1 = st.selectbox("Person 1", t_p1_opts, index=t_p1_opts.index(tr_row['name_1']), key=f"ed_tn1_{t['id']}_{date_str}")
-                                            ed_t_d1 = st.date_input("Person 1 Date", value=tr_d1, key=f"ed_td1_{t['id']}_{date_str}")
-                                            ed_t_n2 = st.selectbox("Person 2", t_p2_opts, index=t_p2_opts.index(tr_row['name_2']), key=f"ed_tn2_{t['id']}_{date_str}")
-                                            ed_t_d2 = st.date_input("Person 2 Date", value=tr_d2, key=f"ed_td2_{t['id']}_{date_str}")
-                                            ed_t_24 = st.checkbox("Full 24h (0700-0700)", value=(float(tr_row['total_hours']) >= 24.0), key=f"ed_t24_{t['id']}_{date_str}")
-                                            et_c1, et_c2 = st.columns(2)
-                                            ed_t_s = et_c1.text_input("Start", value=str(tr_row['start_time']), key=f"ed_ts_{t['id']}_{date_str}")
-                                            ed_t_e = et_c2.text_input("End", value=str(tr_row['end_time']), key=f"ed_te_{t['id']}_{date_str}")
-                                            if st.form_submit_button("💾 Save Changes", type="primary", use_container_width=True):
-                                                if ed_t_24:
-                                                    new_s, new_e, new_h = "0700", "0700", 24.0
-                                                else:
-                                                    new_s, new_e = ed_t_s.strip(), ed_t_e.strip()
-                                                    new_h = calc_hours(new_s, new_e)
-                                                d1_s = ed_t_d1.strftime("%Y-%m-%d")
-                                                d2_s = ed_t_d2.strftime("%Y-%m-%d")
-                                                conn = get_db_connection()
-                                                try:
-                                                    c = conn.cursor()
-                                                    c.execute(
-                                                        "UPDATE Shift_Trades_V3 SET Date_1=%s, Name_1=%s, Date_2=%s, Name_2=%s, Start_Time=%s, End_Time=%s, Total_Hours=%s WHERE id=%s",
-                                                        (d1_s, ed_t_n1, d2_s, ed_t_n2, new_s, new_e, new_h, t['id'])
-                                                    )
-                                                    log_audit_event(c, "Shift Trade Edited", f"{d1_s} / {d2_s}", f"Edited Trade: {ed_t_n1} ({d1_s}) <-> {ed_t_n2} ({d2_s}) ({new_s}-{new_e}, {new_h}h)")
-                                                    conn.commit()
-                                                finally:
-                                                    conn.close()
-                                                st.rerun()
-                                    if st.button("🗑 Cancel Trade", key=f"del_trade_{t['id']}_{date_str}", use_container_width=True):
+                                    if st.button("🗑 Cancel Trade", key=f"del_trade_{t['id']}_{date_str}", type="primary", use_container_width=True):
                                         conn = get_db_connection()
                                         try:
                                             c = conn.cursor()
