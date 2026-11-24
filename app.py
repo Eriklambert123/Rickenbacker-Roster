@@ -2349,7 +2349,8 @@ dynamic_years = sorted(list(set(range(min(2025, current_yr - 1), max(2028, curre
 # PAGE 1: DAILY ROSTER
 # ==========================================
 if selected_page == "📋 Daily Roster":
-    st.markdown(f"<h2 style='color:{top_shift_color}; margin-top: -15px;'>{selected_shift}</h2>", unsafe_allow_html=True)
+    day_of_week_upper = target_date.strftime("%A").upper()
+    st.markdown(f"<h2 style='color:{top_shift_color}; margin-top: -15px;'>{day_of_week_upper}, {target_date_str} ({selected_shift})</h2>", unsafe_allow_html=True)
 
     col1, col2, col3, col4, col5 = st.columns([1.0, 1.15, 1.25, 1.25, 1.25])
     with col1:
@@ -2415,61 +2416,186 @@ if selected_page == "📋 Daily Roster":
 
     print_html = f"""
     <html><head><style>
+        * {{ box-sizing: border-box; }}
         @media print {{
-            @page {{ size: landscape; margin: 0.22in 0.28in; }}
+            @page {{ size: landscape; margin: 0.28in 0.32in; }}
             html, body {{
+                background: #fff !important;
+                margin: 0 !important;
+                padding: 0 !important;
                 print-color-adjust: exact;
                 -webkit-print-color-adjust: exact;
-                max-height: 100%;
+            }}
+            .roster-page {{
+                width: 100% !important;
+                min-height: 7.72in !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                box-shadow: none !important;
             }}
         }}
-        body {{ font-family: Arial, sans-serif; font-size: 11.5px; margin: 0; padding: 0; color: #000; }}
-        h2 {{ text-align: center; margin-bottom: 4px; margin-top: 0; font-size: 18px; color: #000; }}
-        h3 {{ margin-top: 0; margin-bottom: 3px; border-bottom: 1.5px solid #000; padding-bottom: 2px; font-size: 13px; color: #000; }}
-        .summary {{ display: flex; justify-content: space-around; flex-wrap: wrap; gap: 6px; margin-bottom: 7px; font-weight: bold; font-size: 12px; background: #e0e0e0; padding: 5px 8px; border-radius: 4px; border: 1px solid #000; }}
-        .trucks {{ display: flex; justify-content: space-between; gap: 8px; margin-bottom: 7px; }}
-        .col {{ width: 33%; }}
-        .box {{ border: 1px solid #000; padding: 4px 6px; border-radius: 4px; margin-bottom: 5px; page-break-inside: avoid; background: #fff; }}
-        .box h4 {{ margin: 0 0 3px 0; color: #000; font-size: 13.5px; border-bottom: 1px solid #ccc; padding-bottom: 1px; }}
-        .seat {{ display: flex; justify-content: space-between; margin-bottom: 2px; font-size: 11px; line-height: 1.18; }}
-        .bottom-section {{ display: flex; gap: 8px; page-break-inside: avoid; align-items: stretch; }}
-        .details {{ flex: 1.15; border: 1px solid #000; padding: 5px 7px; border-radius: 4px; background: #fff; font-size: 10.8px; line-height: 1.22; }}
+        body {{
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            margin: 0;
+            padding: 16px;
+            background: #eef1f5;
+            color: #000;
+        }}
+        .roster-page {{
+            width: 10.36in;
+            min-height: 7.72in;
+            margin: 0 auto;
+            padding: 14px;
+            background: #fff;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.14);
+            display: flex;
+            flex-direction: column;
+            gap: 11px;
+        }}
+        h2 {{
+            text-align: center;
+            margin: 0;
+            font-size: 23px;
+            letter-spacing: 0.3px;
+            color: #000;
+        }}
+        h3 {{
+            margin: 0 0 6px 0;
+            border-bottom: 2px solid #000;
+            padding-bottom: 3px;
+            font-size: 16px;
+            color: #000;
+        }}
+        .summary {{
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            gap: 8px 16px;
+            font-weight: bold;
+            font-size: 14px;
+            background: #e2e5e9;
+            padding: 9px 12px;
+            border-radius: 5px;
+            border: 1.5px solid #000;
+        }}
+        .trucks {{
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            flex: 1.35 1 auto;
+        }}
+        .col {{
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }}
+        .box {{
+            border: 1.5px solid #000;
+            padding: 8px 11px;
+            border-radius: 5px;
+            page-break-inside: avoid;
+            background: #fff;
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+        }}
+        .box h4 {{
+            margin: 0 0 6px 0;
+            color: #000;
+            font-size: 16.5px;
+            border-bottom: 1.5px solid #bbb;
+            padding-bottom: 3px;
+        }}
+        .seat {{
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 5px;
+            font-size: 13.5px;
+            line-height: 1.35;
+        }}
+        .seat:last-child {{
+            margin-bottom: 0;
+        }}
+        .bottom-section {{
+            display: flex;
+            gap: 12px;
+            page-break-inside: avoid;
+            align-items: stretch;
+            flex: 1 0 auto;
+        }}
+        .details {{
+            flex: 1.15;
+            border: 1.5px solid #000;
+            padding: 9px 12px;
+            border-radius: 5px;
+            background: #fff;
+            font-size: 13px;
+            line-height: 1.4;
+        }}
         .events-col {{ flex: 0.9; }}
         .notes-col {{ flex: 0.95; }}
-        .notes-content {{ font-size: 11px; line-height: 1.25; margin-top: 2px; white-space: normal; }}
-        ul {{ margin-top: 2px; padding-left: 16px; margin-bottom: 0; }}
-        li {{ margin-bottom: 2px; }}
+        .notes-content {{
+            font-size: 13px;
+            line-height: 1.42;
+            margin-top: 4px;
+            white-space: normal;
+        }}
+        ul {{
+            margin-top: 4px;
+            padding-left: 20px;
+            margin-bottom: 0;
+        }}
+        li {{
+            margin-bottom: 5px;
+        }}
+        li:last-child {{
+            margin-bottom: 0;
+        }}
     </style>
     <script>
         function fitAndPrint() {{
-            var maxPageHeight = 735;
-            var actualHeight = document.body.scrollHeight;
-            if (actualHeight > maxPageHeight) {{
-                var scaleFactor = Math.max(0.74, maxPageHeight / actualHeight);
-                document.body.style.zoom = scaleFactor;
+            var page = document.querySelector('.roster-page');
+            if (page) {{
+                // Temporarily measure natural height without forced min-height so normal days don't shrink
+                var savedMinH = page.style.minHeight;
+                page.style.minHeight = 'auto';
+                var naturalHeight = page.scrollHeight;
+                var maxSinglePagePx = 746; // ~7.77in at 96dpi (fits US Letter landscape with 0.28in margins)
+                if (naturalHeight > maxSinglePagePx) {{
+                    var scaleFactor = Math.max(0.72, maxSinglePagePx / naturalHeight);
+                    document.body.style.zoom = scaleFactor;
+                }} else {{
+                    page.style.minHeight = savedMinH;
+                }}
             }}
             window.print();
         }}
     </script>
     </head>
     <body onload="fitAndPrint()">
-        <h2>Rickenbacker Fire Dept Daily Roster - {target_date_str} ({selected_shift})</h2>
-        <div class="summary">
-            <div>Total On-Duty: {manning_disp}</div>
-            <div>OT Needed: {ot_needed_disp}</div>
-            <div>Scheduled OT: {scheduled_ot_str}</div>
-            <div>Scheduled Leave: {scheduled_leave_str}</div>
-            <div>Shift Trades: {scheduled_trades_str}</div>
-        </div>
-        <div class="trucks">
-            <div class="col">{render_print_rig("CH-222")}{render_print_rig("R-221")}{render_print_rig("Tanker")}</div>
-            <div class="col">{render_print_rig("E-221")}{render_print_rig("ARO")}</div>
-            <div class="col">{col3_html}</div>
-        </div>
-        <div class="bottom-section">
-            <div class="details"><h3>🧹 Station Details</h3><ul>{station_details_html}</ul></div>
-            <div class="details events-col"><h3>📆 Events & Training</h3><ul>{events_html}</ul></div>
-            {print_notes_block_html}
+        <div class="roster-page">
+            <h2>Rickenbacker Fire Dept Daily Roster - {day_of_week_upper}, {target_date_str} ({selected_shift})</h2>
+            <div class="summary">
+                <div>Total On-Duty: {manning_disp}</div>
+                <div>OT Needed: {ot_needed_disp}</div>
+                <div>Scheduled OT: {scheduled_ot_str}</div>
+                <div>Scheduled Leave: {scheduled_leave_str}</div>
+                <div>Shift Trades: {scheduled_trades_str}</div>
+            </div>
+            <div class="trucks">
+                <div class="col">{render_print_rig("CH-222")}{render_print_rig("R-221")}{render_print_rig("Tanker")}</div>
+                <div class="col">{render_print_rig("E-221")}{render_print_rig("ARO")}</div>
+                <div class="col">{col3_html}</div>
+            </div>
+            <div class="bottom-section">
+                <div class="details"><h3>🧹 Station Details</h3><ul>{station_details_html}</ul></div>
+                <div class="details events-col"><h3>📆 Events & Training</h3><ul>{events_html}</ul></div>
+                {print_notes_block_html}
+            </div>
         </div>
     </body></html>
     """
